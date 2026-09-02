@@ -1,0 +1,8 @@
+# ---- Scope de auditoria: SOLO lo listado aqui puede escanearse ----
+# Cualquier target fuera de estas redes es rechazado por las herramientas,
+# sin importar lo que pida el usuario o decida el supervisor (LLM).
+#
+# Formato: IPs, CIDRs. Por defecto: solo loopback (modo demo/CI).
+allowed_targets:
+  - "127.0.0.1/32"
+  - "::1/128"
