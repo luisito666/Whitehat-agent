@@ -1,0 +1,4 @@
+# ---- Scope de la auditoria del master K8s (self-audit de Luis) ----
+# SOLO el control-plane. El worker 192.168.17.53 queda fuera.
+allowed_targets:
+  - "192.168.17.52/32"
