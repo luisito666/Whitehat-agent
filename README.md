@@ -16,12 +16,22 @@ PoC de **auditoría de seguridad multi-agente** con LangGraph + **protocolo A2A*
 │ scan_host     │              │ find_cves      │        │ save_report    │
 │ (nmap/py)     │              │ (NVD+KEV)      │        │ (markdown)     │
 └───────────────┘              └────────────────┘        └────────────────┘
+                                        │ hallazgo CRITICO/KEV
+                                        ▼ (opcional, triple llave)
+                        ┌───────────────────────────────┐
+                        │ exploit_agent  :9104 (A2A)    │
+                        │ prove_vulnerability (canary)  │
+                        │ run_metasploit_module         │
+                        │ run_python_snippet            │
+                        └───────────────────────────────┘
 ```
 
 El supervisor es un grafo LangGraph manual (`Command`) cuyas tools de handoff
 (`transfer_to_recon_agent`, etc.) rutean el grafo; cada worker es un **servicio
 A2A independiente** (Agent Card en `/.well-known/agent.json`, JSON-RPC
 `message/send`) que internamente es un `create_react_agent` con SUS herramientas.
+Todos los system prompts de los agentes están centralizados en
+`src/pentest_agent/agents.py` (`EXPLOIT_PROMPT` incluido).
 
 Hay además dos modos extra:
 
@@ -29,10 +39,12 @@ Hay además dos modos extra:
   clásico, todo en un proceso (útil para comparar).
 - **determinista** (`--no-llm`): scan → NVD → reporte sin LLM (CI/tests).
 
-## Modo ofensivo (whitehat PoC) — fail-closed por diseño
+## Modo ofensivo (whitehat) — fail-closed por diseño
 
-El flujo de venta: demostrarle al cliente que el hueco es real ("leímos el
-canary, aquí está el hash"). Para eso existe `exploit_agent` (:9104), pero con
+El flujo de venta: demostrarle al cliente que el hueco es **real y explotable**
+("leímos el canary, obtuvimos shell de root; aquí está el hash y la referencia
+de autorización"). Para eso existe `exploit_agent` (:9104), que solo se registra
+en el supervisor si el operador exporta `A2A_EXPLOIT_URL`, y cuyas tools tienen
 **triple llave** — todas deben abrirse o no se ejecuta nada:
 
 1. **Engagement** (`engagement.yaml`, NO se commitea): cliente, referencia de
@@ -44,38 +56,64 @@ canary, aquí está el hash"). Para eso existe `exploit_agent` (:9104), pero con
 3. **Técnica autorizada y no prohibida** — `prohibited` se evalúa primero
    (un typo en `allowed` no puede habilitar algo vetado).
 
-Reglas del PoC: **no destructivo** (leer UN canary, hash sha256, cero
-exfiltración real, cero persistencia/DoS/lateral). Todo queda en el ledger
-append-only `reports/evidence.jsonl` — cadena de custodia con timestamp,
-técnica, URL, hash y referencia de autorización. Ese ledger es parte del
-deliverable para el cliente.
+### Las 3 tools del exploit_agent
 
-Lab para desarrollar/demos: `python -m pentest_agent.lab` (app vulnerable
-estilo CVE-2021-41773 con canary, SOLO loopback).
+| tool | qué hace | contención |
+|---|---|---|
+| `prove_vulnerability` | PoC path-traversal: leer UN canary, sha256, cero exfiltración | scope + triple llave |
+| `run_metasploit_module` | Ejecuta UN módulo de la **allowlist exacta** del engagement (`msf.allowed_modules`) vía msfrpcd; detecta sesión y la prueba (`id`) | allowlist por módulo + triple llave |
+| `run_python_snippet` | Python ad-hoc del operador (POCs, parsers, cálculos) | subproceso aislado; audit hook: `socket.connect` solo a IPs del scope, subprocesos/forks bloqueados; RLIMIT CPU/mem + timeout; sha256 al ledger |
+
+Todo queda en el ledger append-only `reports/evidence.jsonl` — cadena de
+custodia con timestamp, técnica, hash y `auth_reference`. Ese ledger es parte
+del deliverable para el cliente.
+
+**E2E verificado en lab** (Metasploit 6.5.4 real, userspace, todo loopback):
+`exploit/unix/ftp/vsftpd_234_backdoor` contra `lab_vsftpd.py` → AutoCheck
+`[+] The target appears to be vulnerable` → `[+] Backdoor has been spawned` →
+payload `cmd/unix/reverse_bash` → **sesión Command shell** → `id` responde
+`uid=0(root)` → ledger con `proven: true, session_opened: true`.
+
+### Labs (loopback únicamente)
+
+- `python -m pentest_agent.lab` — web vulnerable estilo CVE-2021-41773 con
+  canary (para `prove_vulnerability`).
+- `python -m pentest_agent.lab_vsftpd` — vsftpd 2.3.4 simulado con backdoor
+  CVE-2011-2523 (FTP 2121, shell 6200; para `run_metasploit_module`).
+
+### Flujo ofensivo completo (lab)
 
 ```bash
-# Flujo ofensivo completo (lab)
 cp engagement.example.yaml engagement.yaml     # adaptar por cliente real
-python -m pentest_agent.lab                    # target vulnerable (lab)
-python -m pentest_agent.approve                # TU apruebas -> export var
+python -m pentest_agent.lab_vsftpd             # target vulnerable (lab)
+python -m pentest_agent.approve                # TÚ apruebas -> export var
 PENTEST_EXPLOIT_APPROVED=... python -m pentest_agent.a2a_server --role exploit --port 9104
 export A2A_EXPLOIT_URL=http://127.0.0.1:9104   # habilita handoff en supervisor
 python scripts/e2e_a2a.py                      # auditoria con demo de impacto
 ```
 
-**Línea honesta:** lo que hay aquí es un *verificador de impacto* (canary
-proof), no exploits weaponizados. Cadenas de explotación reales se agregan
-por-engagement, bajo contrato, como tools específicas con su técnica
-declarada en el engagement.
+Para el backend Metasploit real: instalar Metasploit + msfrpcd (ver
+`scripts/msf_e2e.sh`) y exportar `MSF_BACKEND=real`, `MSFRPCD_PASSWORD`,
+`MSFRPCD_SSL=1`. Sin daemon, la tool corre en backend `sim` (dev/tests).
+
+**Línea honesta:** sin engagement vigente + aprobación humana no hay
+explotación, punto. Lo weaponizado es **por módulo de allowlist** declarado en
+el contrato; los snippets Python corren contenidos (audit hook + rlimits) pero
+con los privilegios del operador — la barrera primaria es contractual y
+auditada; sandbox fuerte (contenedor dedicado) está en el roadmap.
 
 ## Seguridad (innegociable)
 
 1. **Scope allowlist** (`scope.yaml`): las tools rechazan targets fuera de la
    lista; la frontera es código, no prompt. Por defecto solo `127.0.0.1`.
-2. **Cero explotación**: descubrimiento + correlación + reporte. Nada ofensivo.
+2. **Defensivo por defecto**: descubrimiento + correlación + reporte. Lo
+   ofensivo es opt-in por el operador y falla cerrado sin las tres llaves.
 3. **CVEs solo de tool calls**: prohibido citar CVEs que no devuelva `find_cves`.
 4. **Escaneo no privilegiado**: connect-scan puro si no hay nmap; con nmap,
    `-sV -oX -` y parseo XML determinista.
+5. **Evidencia no destructiva**: leer UN canary / escribir UN marcador o
+   ejecutar UN módulo allowlisted. Cero exfiltración real, persistencia, DoS
+   o movimiento lateral — prohibidos en el engagement y auditados en el ledger.
 
 ## Arranque
 
@@ -103,11 +141,16 @@ python -m pentest_agent --target 127.0.0.1              # in-process
 - **URLs A2A**: `A2A_RECON_URL`, `A2A_VULN_URL`, `A2A_REPORTER_URL` (defaults
   `127.0.0.1:9101/9102/9103`) — así puedes desparramar subagentes en máquinas
   distintas (ej: recon en la Raspberry Pi).
+- **Exploit (opcional)**: `A2A_EXPLOIT_URL` (registra al exploit_agent en el
+  supervisor), `PENTEST_ENGAGEMENT_FILE`, `PENTEST_EXPLOIT_APPROVED`,
+  `MSF_BACKEND` (`sim|real`), `MSFRPCD_PASSWORD`, `MSFRPCD_USER`,
+  `MSFRPCD_SSL`, `MSFRPCD_HOST/PORT`, `PENTEST_SNIPPET_TIMEOUT`.
 
 ## Tests
 
 ```bash
-pytest -q    # scope, parsing nmap/NVD, banner->query, A2A build/fail-safe
+pytest -q    # 45 tests: scope, parsing nmap/NVD, A2A (4 roles), gates
+             # fail-closed (engagement/msf/pysnippet) y contencion real
 ```
 
 ## Limitaciones honestas (roadmap)
@@ -116,5 +159,8 @@ pytest -q    # scope, parsing nmap/NVD, banner->query, A2A build/fail-safe
   (`cpeMatch`), y nmap ya emite CPE.
 - Sin NVD API key: rate limit estricto (~5 req/30s).
 - Sin auth en los servidores A2A (PoC local). Producción: API key/bearer.
+- Sandbox de snippets Python: el audit hook no es barrera contra
+  ctypes/C-ext; para sandbox fuerte, contenedor dedicado por engagement.
 - Faltan: `searchsploit` como tool, subagente host-audit (SSH config) y K8s
-  (`trivy`, `kube-bench`).
+  (`trivy`, `kube-bench`), aprobación humana vía Telegram (interrupt de
+  LangGraph) y reporte ejecutivo a partir del ledger.

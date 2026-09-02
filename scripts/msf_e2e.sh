@@ -18,10 +18,14 @@ LAB_PID=$!
 trap 'kill $LAB_PID $RPC_PID 2>/dev/null || true' EXIT
 sleep 1
 
-# 2) msfrpcd (necesita bundle instalado; fallara con mensaje claro si falta)
+# 2) msfrpcd (necesita bundle instalado; fallara con mensaje claro si falta).
+#    Sin -S => SSL activo, consistente con el default MSFRPCD_SSL=1 de la tool.
+#    Usuario default 'msf' (no -U), consistente con el default de la tool.
+pkill -f msfrpcd 2>/dev/null || true   # daemon previo en 55553 (lab loopback)
 export MSFRPCD_PASSWORD="${MSFRPCD_PASSWORD:-whlab-test-pass}"
+export MSFRPCD_SSL=1
 cd "$MSF_HOME"
-bundle exec ruby msfrpcd -P "$MSFRPCD_PASSWORD" -S -p 55553 -a 127.0.0.1 &
+bundle exec ruby msfrpcd -P "$MSFRPCD_PASSWORD" -p 55553 -a 127.0.0.1 &
 RPC_PID=$!
 cd - >/dev/null
 sleep 8

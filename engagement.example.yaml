@@ -20,6 +20,7 @@ rules_of_engagement:
   allowed_techniques:
     - "path-traversal-poc"      # leer UN archivo canary fuera del webroot
     - "metasploit-module"       # ejecutar modulos de la allowlist de abajo
+    - "python-snippet"          # scripts ad-hoc del operador (contenidos)
   prohibited:
     - "persistence"
     - "dos"
