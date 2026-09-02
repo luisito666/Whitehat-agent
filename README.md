@@ -29,6 +29,45 @@ Hay además dos modos extra:
   clásico, todo en un proceso (útil para comparar).
 - **determinista** (`--no-llm`): scan → NVD → reporte sin LLM (CI/tests).
 
+## Modo ofensivo (whitehat PoC) — fail-closed por diseño
+
+El flujo de venta: demostrarle al cliente que el hueco es real ("leímos el
+canary, aquí está el hash"). Para eso existe `exploit_agent` (:9104), pero con
+**triple llave** — todas deben abrirse o no se ejecuta nada:
+
+1. **Engagement** (`engagement.yaml`, NO se commitea): cliente, referencia de
+   autorización escrita, ventana de vigencia, scope y técnicas permitidas.
+   Las tools ofensivas **no tienen default**: sin archivo válido, fallan.
+2. **Aprobación humana** (`python -m pentest_agent.approve` → exporta
+   `PENTEST_EXPLOIT_APPROVED=<engagement_id>` en el proceso del SERVIDOR
+   exploit). El LLM/supervisor/cliente no pueden inyectarla.
+3. **Técnica autorizada y no prohibida** — `prohibited` se evalúa primero
+   (un typo en `allowed` no puede habilitar algo vetado).
+
+Reglas del PoC: **no destructivo** (leer UN canary, hash sha256, cero
+exfiltración real, cero persistencia/DoS/lateral). Todo queda en el ledger
+append-only `reports/evidence.jsonl` — cadena de custodia con timestamp,
+técnica, URL, hash y referencia de autorización. Ese ledger es parte del
+deliverable para el cliente.
+
+Lab para desarrollar/demos: `python -m pentest_agent.lab` (app vulnerable
+estilo CVE-2021-41773 con canary, SOLO loopback).
+
+```bash
+# Flujo ofensivo completo (lab)
+cp engagement.example.yaml engagement.yaml     # adaptar por cliente real
+python -m pentest_agent.lab                    # target vulnerable (lab)
+python -m pentest_agent.approve                # TU apruebas -> export var
+PENTEST_EXPLOIT_APPROVED=... python -m pentest_agent.a2a_server --role exploit --port 9104
+export A2A_EXPLOIT_URL=http://127.0.0.1:9104   # habilita handoff en supervisor
+python scripts/e2e_a2a.py                      # auditoria con demo de impacto
+```
+
+**Línea honesta:** lo que hay aquí es un *verificador de impacto* (canary
+proof), no exploits weaponizados. Cadenas de explotación reales se agregan
+por-engagement, bajo contrato, como tools específicas con su técnica
+declarada en el engagement.
+
 ## Seguridad (innegociable)
 
 1. **Scope allowlist** (`scope.yaml`): las tools rechazan targets fuera de la

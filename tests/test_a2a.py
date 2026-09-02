@@ -9,7 +9,10 @@ from pentest_agent.a2a_server import ROLES, build_server
 class TestRoles:
     def test_tres_roles_con_puertos_distintos(self):
         ports = [ROLES[r]["port"] for r in ROLES]
-        assert sorted(ports) == [9101, 9102, 9103]
+        assert sorted(ports) == [9101, 9102, 9103, 9104]
+
+    def test_rol_ofensivo_existe_con_tool_de_prueba(self):
+        assert "prove_vulnerability" in [t.name for t in ROLES["exploit"]["tools"]]
 
 
 class TestServerBuild:
