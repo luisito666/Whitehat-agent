@@ -19,6 +19,7 @@ scope:
 rules_of_engagement:
   allowed_techniques:
     - "path-traversal-poc"      # leer UN archivo canary fuera del webroot
+    - "metasploit-module"       # ejecutar modulos de la allowlist de abajo
   prohibited:
     - "persistence"
     - "dos"
@@ -26,3 +27,10 @@ rules_of_engagement:
     - "lateral-movement"
     - "privilege-escalation"
   max_evidence_items: 5
+# Allowlist EXACTA de modulos Metasploit autorizados por el cliente.
+# El gate verifica el nombre completo del modulo contra esta lista.
+msf:
+  allowed_modules:
+    - "exploit/unix/ftp/vsftpd_234_backdoor"
+    - "exploit/multi/http/tomcat_jsp_upload_cookies"
+
