@@ -1,0 +1,28 @@
+# ---- Engagement de EJEMPLO: laboratorio interno (whitehat-agent) ----
+# Copiar a engagement.yaml y adaptar POR AUDITORIA REAL.
+# Reglas:
+#   - reference: id del contrato/RoE firmado por el cliente (obligatorio)
+#   - ventana de vigencia: fuera de esas fechas la explotacion falla cerrado
+#   - allowed_techniques: SOLO lo que el cliente autorizo explicitamente
+#   - prohibited: se verifica ANTES que allowed (defense in depth)
+engagement_id: ENG-LAB-2026-001
+client:
+  name: "Laboratorio Interno Whitehat-agent"
+  contact: "Luis Penagos"
+authorization:
+  reference: "roE-lab-interno-v1"
+  valid_from: "2026-09-01"
+  valid_until: "2026-12-31"
+scope:
+  allowed_targets:
+    - "127.0.0.1/32"
+rules_of_engagement:
+  allowed_techniques:
+    - "path-traversal-poc"      # leer UN archivo canary fuera del webroot
+  prohibited:
+    - "persistence"
+    - "dos"
+    - "data-exfiltration"
+    - "lateral-movement"
+    - "privilege-escalation"
+  max_evidence_items: 5
