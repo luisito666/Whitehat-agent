@@ -15,6 +15,8 @@ PoC de **auditoría de seguridad multi-agente** con LangGraph + **protocolo A2A*
 │ :9101 (A2A)   │              │ :9102 (A2A)    │        │ :9103 (A2A)    │
 │ scan_host     │              │ find_cves      │        │ save_report    │
 │ (nmap/py)     │              │ (NVD+KEV)      │        │ (markdown)     │
+│ run_recon_    │              │                │        │                │
+│ snippet (py)  │              │                │        │                │
 └───────────────┘              └────────────────┘        └────────────────┘
                                         │ hallazgo CRITICO/KEV
                                         ▼ (opcional, triple llave)
@@ -114,6 +116,11 @@ auditada; sandbox fuerte (contenedor dedicado) está en el roadmap.
 5. **Evidencia no destructiva**: leer UN canary / escribir UN marcador o
    ejecutar UN módulo allowlisted. Cero exfiltración real, persistencia, DoS
    o movimiento lateral — prohibidos en el engagement y auditados en el ledger.
+6. **Python contenido también en recon**: `run_recon_snippet` corre en
+   subproceso aislado con audit hook (`socket.connect` solo a IPs del scope,
+   subprocesos bloqueados) + rlimits + timeout, y auditada en el ledger.
+   El gate de recon es `scope.yaml` (como `scan_host`); lo ofensivo sigue
+   siendo opt-in (engagement + triple llave).
 
 ## Arranque
 
@@ -149,9 +156,9 @@ python -m pentest_agent --target 127.0.0.1              # in-process
 ## Tests
 
 ```bash
-pytest -q    # 81 tests: scope, parsing nmap/NVD, A2A (4 roles), gates
-             # fail-closed (engagement/msf/pysnippet), skills, MCP loader,
-             # scope wrapper MCP y contencion real
+pytest -q    # 108 tests: scope, parsing nmap/NVD, A2A (4 roles), gates
+             # fail-closed (engagement/msf/pysnippet/recon-snippet), skills,
+             # MCP loader, scope wrapper MCP y contencion real
 ```
 
 ## Skills (conocimiento por rol)
