@@ -31,7 +31,33 @@ from mcp.server.fastmcp import FastMCP  # noqa: E402
 
 m = FastMCP("osint-passive")
 
-CRT_SH = "https://crt.sh/?output=json&q=%"
+CRT_SH = "https://crt.sh/?output=json&q={q}"
+
+
+def _crt_sh_query(domain: str) -> list[dict]:
+    """Consulta crt.sh con wildcard + reintentos. crt.sh es inestable (502
+    intermitentes incluso para dominios validos): reintenta con backoff."""
+    import time
+
+    q = urllib.parse.quote(f"%.{domain}", safe="")
+    last_exc: Exception | None = None
+    for attempt in range(4):
+        try:
+            with httpx.Client(timeout=45) as http:
+                resp = http.get(
+                    CRT_SH.format(q=q),
+                    headers={"User-Agent": "pentest-agent-osint/0.1"},
+                )
+                if resp.status_code in (502, 503, 504):
+                    raise httpx.HTTPStatusError(
+                        f"crt.sh {resp.status_code}", request=resp.request, response=resp
+                    )
+                resp.raise_for_status()
+                return resp.json()
+        except Exception as e:  # noqa: BLE001 - reintenta y reporta el ultimo
+            last_exc = e
+            time.sleep(2 * (attempt + 1))
+    raise last_exc  # type: ignore[misc]
 
 
 def _domain_allowed(domain: str) -> tuple[bool, str]:
@@ -72,12 +98,8 @@ def ct_subdomains(domain: str, limit: int = 100) -> str:
     if not ok:
         return json.dumps({"blocked": True, "reason": why})
 
-    url = CRT_SH.replace("%", urllib.parse.quote(domain, safe=""))
     try:
-        with httpx.Client(timeout=45) as http:
-            resp = http.get(url, headers={"User-Agent": "pentest-agent-osint/0.1"})
-            resp.raise_for_status()
-            rows = resp.json()
+        rows = _crt_sh_query(domain)
     except Exception as e:  # noqa: BLE001
         return json.dumps({"error": type(e).__name__, "detail": str(e)[:300]})
 

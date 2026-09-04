@@ -6,8 +6,27 @@ reporter:
   - name: artifacts-fs
     transport: stdio
     command: python
-    args: ["-m", "mcp_server_filesystem", "/tmp/pentest-reports"]
+    args: ["scripts/mcp_fs_server.py", "/tmp/pentest-reports"]
 
-vuln: []      # fase 2: NVD/OSV como MCP
-recon: []     # fase 2: OSINT (Shodan/Censys)
-exploit: []   # fase 2: metasploit MCP — bajo triple llave
+# --- fase 2 ---
+recon:
+  - name: osint-passive
+    transport: stdio
+    command: python
+    args: ["scripts/mcp_osint_server.py"]
+    env:
+      PENTEST_OSINT_CONFIRM_DOMAIN: "midominio.co"   # lab/demo (dominio propio)
+      # en engagement real: engagement.yaml -> osint.allowed_domains
+
+exploit: []   # opt-in: activar SOLO con gates abiertos en el proceso worker
+# exploit:
+#   - name: metasploit-gated
+#     transport: stdio
+#     command: python
+#     args: ["scripts/mcp_msf_server.py"]
+#     env:
+#       PENTEST_ENGAGEMENT_FILE: "engagement.yaml"
+#       PENTEST_EXPLOIT_APPROVED: "<engagement_id>"   # via python -m pentest_agent.approve
+#       MSF_BACKEND: "real"
+
+vuln: []      # futuro: NVD/OSV como MCP
