@@ -13,3 +13,4 @@ build/
 engagement-*.yaml
 scope.master.yaml
 scope.worker.yaml
+mcp_servers.yaml

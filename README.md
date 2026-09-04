@@ -149,8 +149,57 @@ python -m pentest_agent --target 127.0.0.1              # in-process
 ## Tests
 
 ```bash
-pytest -q    # 45 tests: scope, parsing nmap/NVD, A2A (4 roles), gates
-             # fail-closed (engagement/msf/pysnippet) y contencion real
+pytest -q    # 81 tests: scope, parsing nmap/NVD, A2A (4 roles), gates
+             # fail-closed (engagement/msf/pysnippet), skills, MCP loader,
+             # scope wrapper MCP y contencion real
+```
+
+## Skills (conocimiento por rol)
+
+Cada subagente carga **skills**: markdown versionado en el repo, concatenado
+en orden alfabético bajo una sección fija del system prompt. El repo es el
+distribuidor — sin curador, sin runtime, sin descargas.
+
+```
+skills/
+├── recon/scanning-methodology.md     # orden de scan, banners, fingerprint
+├── vuln/cve-correlation.md           # NVD, KEV, reglas de escalada
+├── reporter/report-standards.md      # estructura, evidencia citada
+└── exploit/msf-runbook.md            # check→exploit→sesión, triple llave
+```
+
+Para añadir conocimiento a un rol: crea `skills/<rol>/*.md` y reinicia el
+worker. Regla de tamaño: <2KB por archivo (el prompt viaja en cada request).
+
+## MCP (Model Context Protocol)
+
+Los workers pueden usar tools de servidores MCP externos además de las
+nativas. Config declarativa por rol en `mcp_servers.yaml` (gitignored;
+`mcp_servers.example.yaml` es la plantilla):
+
+```yaml
+reporter:
+  - name: artifacts-fs
+    transport: stdio
+    command: python
+    args: ["scripts/mcp_fs_server.py", "/tmp/pentest-reports"]
+```
+
+- **Sin archivo o sin rol → []**: ese rol no carga MCP (todo sigue igual).
+- **Trust boundary**: `mcp_servers.yaml` solo lo escribe el operador.
+  Credenciales por env vars, jamás en el yaml.
+- **Fail-closed para exploit**: las tools MCP del rol ofensivo no se cargan
+  (ni se exponen sus schemas al LLM) sin las tres llaves abiertas en el
+  proceso del worker: scope + `engagement.yaml` + `PENTEST_EXPLOIT_APPROVED`.
+  Los servidores stdio heredan el env del proceso aprobado.
+- **Scope para tools de red**: cualquier tool MCP cuyo schema acepte
+  `host`/`target`/`url` se envuelve con la misma frontera `Scope.assert_allowed`
+  que las tools nativas (roles no ofensivos).
+
+Smoke E2E (reporter escribe un reporte vía MCP real):
+
+```bash
+.venv/bin/python scripts/mcp_smoke.py
 ```
 
 ## Limitaciones honestas (roadmap)
