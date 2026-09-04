@@ -60,7 +60,7 @@ def test_build_team_injects_skills(tmp_path, monkeypatch):
 
     captured = []
 
-    def fake_react_agent(llm, tools, prompt_txt):
+    def fake_react_agent(llm, tools, prompt_txt, name=None):
         captured.append(prompt_txt)
         return object()
 
