@@ -10,20 +10,23 @@ def _write_config(tmp_path: Path, data: dict) -> None:
     (tmp_path / "mcp_servers.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
 
 
-def test_no_config_file_means_no_servers(tmp_path, monkeypatch):
+def test_no_config_file_means_defaults(tmp_path, monkeypatch):
     monkeypatch.setattr("pentest_agent.mcp_config.MCP_CONFIG_PATH", tmp_path / "mcp_servers.yaml")
     from pentest_agent.mcp_config import load_mcp_config
 
-    assert load_mcp_config("recon") == []
+    # fase 3: sin archivo -> defaults de codigo (fs + terminal)
+    names = [s["name"] for s in load_mcp_config("recon")]
+    assert names == ["filesystem", "terminal"]
 
 
-def test_missing_role_means_no_servers(tmp_path, monkeypatch):
+def test_missing_role_in_yaml_means_defaults(tmp_path, monkeypatch):
     _write_config(tmp_path, {"reporter": [{"name": "fs", "transport": "stdio"}]})
     monkeypatch.setattr("pentest_agent.mcp_config.MCP_CONFIG_PATH", tmp_path / "mcp_servers.yaml")
     from pentest_agent.mcp_config import load_mcp_config
 
-    assert load_mcp_config("recon") == []
     assert load_mcp_config("reporter") == [{"name": "fs", "transport": "stdio"}]
+    names = [s["name"] for s in load_mcp_config("vuln")]
+    assert names == ["filesystem", "terminal"]  # rol sin entrada -> defaults
 
 
 def test_returns_servers_for_role(tmp_path, monkeypatch):
