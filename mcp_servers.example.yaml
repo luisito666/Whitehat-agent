@@ -1,0 +1,13 @@
+# mcp_servers.example.yaml — copiar a mcp_servers.yaml (gitignored).
+# Trust boundary: SOLO el operador escribe este archivo.
+# Credenciales SOLO por env vars, nunca en este yaml.
+
+reporter:
+  - name: artifacts-fs
+    transport: stdio
+    command: python
+    args: ["-m", "mcp_server_filesystem", "/tmp/pentest-reports"]
+
+vuln: []      # fase 2: NVD/OSV como MCP
+recon: []     # fase 2: OSINT (Shodan/Censys)
+exploit: []   # fase 2: metasploit MCP — bajo triple llave
