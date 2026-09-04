@@ -33,9 +33,18 @@ def test_loads_real_tool_from_stdio_server(tmp_path, monkeypatch):
     tools = load_mcp_tools("recon")
     assert len(tools) == 1
     assert tools[0].name == "echo"
-    out = asyncio.run(tools[0].ainvoke({"text": "hola"}))
-    blocks = out if isinstance(out, list) else [out]
-    assert any("hola" in b.get("text", "") for b in blocks if isinstance(b, dict))
+
+    def _texts(out):
+        # StructuredTool con content_and_artifact: (content, metadata)
+        if isinstance(out, tuple) and len(out) == 2:
+            out = out[0]
+        blocks = out if isinstance(out, list) else [out]
+        return " ".join(b.get("text", "") for b in blocks if isinstance(b, dict))
+
+    # via sync (la que usa ToolNode del agent)
+    assert "hola" in _texts(tools[0].invoke({"text": "hola"}))
+    # via async
+    assert "hola" in _texts(asyncio.run(tools[0].ainvoke({"text": "hola"})))
 
 
 def test_exploit_fail_closed_without_env(tmp_path, monkeypatch):
