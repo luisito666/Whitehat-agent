@@ -17,6 +17,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 msf = ["pymetasploit3>=1.0.6"]
+mcp = ["langchain-mcp-adapters>=0.3", "mcp>=1.29"]
 
 [project.scripts]
 pentest-audit = "pentest_agent.cli:main"
