@@ -171,6 +171,11 @@ skills/
 Para añadir conocimiento a un rol: crea `skills/<rol>/*.md` y reinicia el
 worker. Regla de tamaño: <2KB por archivo (el prompt viaja en cada request).
 
+**Skills por cliente (fase 2)**: un engagement vigente puede declarar
+`skills_dirs: [<dirs>]`; los packs `<dir>/<rol>/*.md` se añaden DESPUÉS de
+las del repo (aislados por rol). Engagement inválido/expirado degrada a
+solo-skills-de-repo — nunca rompe el arranque del worker.
+
 ## MCP (Model Context Protocol)
 
 Los workers pueden usar tools de servidores MCP externos además de las
@@ -200,6 +205,24 @@ Smoke E2E (reporter escribe un reporte vía MCP real):
 
 ```bash
 .venv/bin/python scripts/mcp_smoke.py
+```
+
+### Servers MCP incluidos (fase 2)
+
+| Server | Rol | Qué da | Gates |
+|---|---|---|---|
+| `scripts/mcp_osint_server.py` | recon | `ct_subdomains`: subdominios vía certificate transparency (crt.sh, keyless, pasivo) | dominio en `engagement.osint.allowed_domains` o `PENTEST_OSINT_CONFIRM_DOMAIN` (labs) |
+| `scripts/mcp_msf_server.py` | exploit | `run_metasploit_module` + `engagement_status` (canal MCP del mismo core nativo) | triple llave completa dentro del proceso del server |
+| `scripts/mcp_fs_server.py` | reporter | `write_report`/`list_reports` confinados a un dir | ninguno (no ofensivo) |
+
+El OSINT es **pasivo**: consulta logs públicos de CT, cero contacto con la
+infra del cliente. crt.sh es inestable (502 intermitentes) → reintentos con
+backoff + query wildcard `%.dominio`.
+
+Smoke fase 2 (OSINT real contra tu dominio + msf sim con ledger):
+
+```bash
+.venv/bin/python scripts/mcp_smoke_phase2.py   # SMOKE_DOMAIN=tudominio.co opcional
 ```
 
 ## Limitaciones honestas (roadmap)
