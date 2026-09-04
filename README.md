@@ -207,11 +207,37 @@ Smoke E2E (reporter escribe un reporte vía MCP real):
 .venv/bin/python scripts/mcp_smoke.py
 ```
 
-### Servers MCP incluidos (fase 2)
+Los workers **recon, vuln y exploit** cargan por defecto dos servidores MCP
+(sin configuración del operador; una entrada explícita en `mcp_servers.yaml`
+— incluso `[]` — la desactiva):
+
+| Server | Tools | Nota |
+|---|---|---|
+| `scripts/mcp_fs_server.py` | list, read_text, write_text, append_text, move, remove, mkdir, tree, search, sha256, info | jail a un dir base; sin escape con `..`/absolutos |
+| `scripts/mcp_terminal_server.py` | run_command, list_allowed, policy | política dual (abajo) |
+
+### Políticas del terminal MCP
+
+- **investigative** (default recon/vuln): allowlist exacta de binarios
+  (nmap, curl, dig, host, whois, traceroute, ping, openssl, amass) +
+  allowlist de flags por binario + **sin shell** (argv directo) + toda IP
+  literal y todo hostname (resuelto por DNS) se valida contra `scope.yaml`
+  ANTES de ejecutar. Binario/flag/target fuera → `blocked`.
+- **full** (default exploit): `bash -c` arbitrario con timeout y salida
+  acotada — solo se carga bajo la triple llave del rol exploit
+  (`load_mcp_tools` no registra nada del rol sin gates abiertos).
+
+Smoke fase 3 (agents reales + defaults + fail-closed):
+
+```bash
+.venv/bin/python scripts/mcp_smoke_fase3.py
+```
+
+### Servers MCP de fase 2
 
 | Server | Rol | Qué da | Gates |
 |---|---|---|---|
-| `scripts/mcp_osint_server.py` | recon | `ct_subdomains`: subdominios vía certificate transparency (crt.sh, keyless, pasivo) | dominio en `engagement.osint.allowed_domains` o `PENTEST_OSINT_CONFIRM_DOMAIN` (labs) |
+| `scripts/mcp_osint_server.py` | recon (opt-in) | `ct_subdomains`: subdominios vía certificate transparency (crt.sh, keyless, pasivo) | dominio en `engagement.osint.allowed_domains` o `PENTEST_OSINT_CONFIRM_DOMAIN` (labs) |
 | `scripts/mcp_msf_server.py` | exploit | `run_metasploit_module` + `engagement_status` (canal MCP del mismo core nativo) | triple llave completa dentro del proceso del server |
 | `scripts/mcp_fs_server.py` | reporter | `write_report`/`list_reports` confinados a un dir | ninguno (no ofensivo) |
 
