@@ -232,3 +232,118 @@ def test_sse_cursor_replay(client, monkeypatch):
 def test_sse_unknown_session_404(client):
     resp = client.get("/chat/does-not-exist/events")
     assert resp.status_code == 404
+
+
+# --------------------------------------------------------------------- Task 4
+_ENGAGEMENT_YAML = """\
+engagement_id: ENG-TEST-2026-777
+client:
+  name: "ACME Test Corp"
+  contact: "Alguien"
+authorization:
+  reference: "roE-test-ref-v9"
+  valid_from: "2026-01-01"
+  valid_until: "2026-12-31"
+scope:
+  allowed_targets:
+    - "10.11.12.13/32"
+rules_of_engagement:
+  allowed_techniques:
+    - "path-traversal-poc"
+  prohibited:
+    - "dos"
+  max_evidence_items: 5
+msf:
+  allowed_modules:
+    - "exploit/unix/ftp/vsftpd_234_backdoor"
+"""
+
+
+@pytest.fixture
+def engagement_file(tmp_path, monkeypatch):
+    p = tmp_path / "engagement.yaml"
+    p.write_text(_ENGAGEMENT_YAML)
+    monkeypatch.setenv("PENTEST_ENGAGEMENT_FILE", str(p))
+    return p
+
+
+def test_engagement_summary_sin_secretos(client, engagement_file, monkeypatch):
+    monkeypatch.delenv("PENTEST_EXPLOIT_APPROVED", raising=False)
+
+    resp = client.get("/engagement")
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert set(body) == {"id", "client", "valid", "approved", "window", "auth_reference"}
+    assert body["id"] == "ENG-TEST-2026-777"
+    assert body["client"] == "ACME Test Corp"
+    assert body["valid"] is True
+    assert body["approved"] is False
+    assert body["window"] == {"valid_from": "2026-01-01", "valid_until": "2026-12-31"}
+    assert body["auth_reference"] == "roE-test-ref-v9"
+
+    # NINGUN valor filtra scope crudo, allowlist de modulos ni rutas de archivo
+    blob = json.dumps(body)
+    assert "10.11.12.13" not in blob
+    assert "allowed_targets" not in blob
+    assert "allowed_modules" not in blob
+    assert "vsftpd_234_backdoor" not in blob
+    assert "path-traversal-poc" not in blob
+    assert str(engagement_file) not in blob
+    assert "engagement.yaml" not in blob
+
+
+def test_engagement_approved_reflects_env(client, engagement_file, monkeypatch):
+    monkeypatch.setenv("PENTEST_EXPLOIT_APPROVED", "ENG-TEST-2026-777")
+    assert client.get("/engagement").json()["approved"] is True
+
+
+def test_engagement_not_found_404(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("PENTEST_ENGAGEMENT_FILE", str(tmp_path / "no-engagement.yaml"))
+    resp = client.get("/engagement")
+    assert resp.status_code == 404
+
+
+def test_approve_always_501(client, engagement_file):
+    resp = client.post("/engagement/approve")
+    assert resp.status_code == 501
+    assert resp.json() == {"error": "approval is in-person only via approve.py"}
+
+    # tambien 501 con body y sin importar el engagement vigente
+    resp2 = client.post("/engagement/approve", json={"engagement_id": "ENG-TEST-2026-777"})
+    assert resp2.status_code == 501
+    assert resp2.json() == {"error": "approval is in-person only via approve.py"}
+
+
+def test_ledger_tail(client, tmp_path, monkeypatch):
+    ledger = tmp_path / "evidence.jsonl"
+    rows = [json.dumps({"n": i, "ts": f"2026-09-07T0{i}:00:00+00:00"}) for i in range(5)]
+    ledger.write_text("\n".join(rows) + "\n")
+    monkeypatch.setattr(chat_server, "LEDGER_PATH", ledger)
+
+    body = client.get("/ledger", params={"tail": 3}).json()
+    assert [e["n"] for e in body["entries"]] == [2, 3, 4]
+    assert body["total"] == 3
+
+    body_all = client.get("/ledger", params={"tail": 0}).json()
+    assert [e["n"] for e in body_all["entries"]] == [0, 1, 2, 3, 4]
+
+    # una linea corrupta se omite, el endpoint no se rompe
+    ledger.write_text("\n".join(rows) + "\nno-es-json{\n")
+    body_corrupt = client.get("/ledger", params={"tail": 0}).json()
+    assert [e["n"] for e in body_corrupt["entries"]] == [0, 1, 2, 3, 4]
+
+    # archivo ausente -> vacio
+    monkeypatch.setattr(chat_server, "LEDGER_PATH", tmp_path / "no-such-file.jsonl")
+    assert client.get("/ledger").json() == {"entries": [], "total": 0}
+
+
+def test_ledger_tail_capped_at_100(client, tmp_path, monkeypatch):
+    ledger = tmp_path / "evidence.jsonl"
+    ledger.write_text("\n".join(json.dumps({"n": i}) for i in range(250)) + "\n")
+    monkeypatch.setattr(chat_server, "LEDGER_PATH", ledger)
+
+    body = client.get("/ledger", params={"tail": 999}).json()
+    assert len(body["entries"]) == 100
+    assert body["entries"][0]["n"] == 150
+    assert body["entries"][-1]["n"] == 249
