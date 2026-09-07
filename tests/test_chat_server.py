@@ -12,7 +12,7 @@ import json
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from langchain_core.messages import AIMessageChunk
+from langchain_core.messages import AIMessage, AIMessageChunk
 
 from pentest_agent import a2a_team, chat_server
 
@@ -347,3 +347,78 @@ def test_ledger_tail_capped_at_100(client, tmp_path, monkeypatch):
     assert len(body["entries"]) == 100
     assert body["entries"][0]["n"] == 150
     assert body["entries"][-1]["n"] == 249
+
+
+# --------------------------------------------------------------------- Task 5
+class _HandoffAgent:
+    """Supervisor falso: emite un chunk, delega a un worker A2A y cierra.
+
+    Reproduce el patron de eventos que LangGraph produce para un handoff en
+    build_a2a_supervisor: on_chain_start/on_chain_end del nodo cuyo `name` es
+    el rol del worker (recon/vuln/reporter/exploit), con el AIMessage de
+    delegacion (additional_kwargs['task']) como ultimo mensaje del estado.
+    """
+
+    def __init__(self, role: str = "recon", task: str = "scan 10.0.0.1"):
+        self.role = role
+        self.task = task
+
+    async def astream_events(self, inputs, config=None, version=None, **kw):
+        yield {
+            "event": "on_chat_model_stream",
+            "name": "ChatOpenAI",
+            "data": {"chunk": AIMessageChunk(content="Delegando... ")},
+        }
+        delegate = AIMessage(
+            content=f"Delegando a {self.role}: {self.task}",
+            additional_kwargs={"delegate": self.role, "task": self.task},
+        )
+        yield {
+            "event": "on_chain_start",
+            "name": self.role,
+            "data": {"input": {"messages": [delegate]}},
+        }
+        yield {
+            "event": "on_chain_end",
+            "name": self.role,
+            "data": {"output": {"messages": [AIMessage(content=f"[{self.role}] ok")]}},
+        }
+        yield {"event": "on_chain_end", "name": "LangGraph", "data": {}}
+
+
+def test_worker_activity_surfaced(client, monkeypatch):
+    monkeypatch.setattr(
+        a2a_team,
+        "build_a2a_supervisor",
+        lambda *a, **k: _HandoffAgent(role="recon", task="scan 10.0.0.1"),
+    )
+
+    sid = client.post("/chat", json={"message": "audita 10.0.0.1"}).json()["session_id"]
+    events = chat_server.get_events(sid)
+
+    activity = [e["data"] for e in events if e["event"] == "agent.activity"]
+    assert [a["action"] for a in activity] == ["handoff", "done"]
+    assert all(a["role"] == "recon" for a in activity)
+    assert activity[0]["detail"] == "scan 10.0.0.1"
+
+    # el turno cierra normal y los deltas de texto siguen fluyendo
+    assert events[-1]["event"] == "chat.done"
+    assert any(e["event"] == "chat.delta" for e in events)
+
+
+def test_worker_activity_correlation_failure_is_soft(client, monkeypatch):
+    monkeypatch.setattr(
+        a2a_team, "build_a2a_supervisor", lambda *a, **k: _HandoffAgent(role="vuln")
+    )
+
+    def _boom(*a, **k):
+        raise RuntimeError("correlation exploded")
+
+    monkeypatch.setattr(chat_server, "_handoff_detail", _boom)
+
+    sid = client.post("/chat", json={"message": "hola"}).json()["session_id"]
+    events = chat_server.get_events(sid)
+
+    # la correlacion reventada solo pierde el evento extra: el turno completa
+    assert events[-1]["event"] == "chat.done"
+    assert not any(e["event"] == "error" for e in events)
