@@ -411,6 +411,44 @@ def test_worker_activity_surfaced(client, monkeypatch):
     assert any(e["event"] == "chat.delta" for e in events)
 
 
+def test_worker_done_carries_result_summary(client, monkeypatch):
+    monkeypatch.setattr(
+        a2a_team, "build_a2a_supervisor",
+        lambda *a, **k: _HandoffAgent(role="recon", task="scan"),
+    )
+    sid = client.post("/chat", json={"message": "audita"}).json()["session_id"]
+    done = [e["data"] for e in chat_server.get_events(sid)
+            if e["event"] == "agent.activity" and e["data"]["action"] == "done"]
+    # _HandoffAgent devuelve "[recon] ok" -> el prefijo "[recon] " se recorta
+    assert done and done[0]["detail"] == "ok"
+
+
+class _ErrHandoffAgent(_HandoffAgent):
+    """Como _HandoffAgent pero el worker devuelve el JSON de error de
+    safe_call_agent (worker A2A caido)."""
+
+    async def astream_events(self, inputs, config=None, version=None, **kw):
+        err = json.dumps({"error": "ConnectError", "detail": "conn refused",
+                          "url": "http://127.0.0.1:9101"})
+        yield {"event": "on_chain_start", "name": self.role,
+               "data": {"input": {"messages": [
+                   AIMessage(content="d", additional_kwargs={"task": self.task})]}}}
+        yield {"event": "on_chain_end", "name": self.role,
+               "data": {"output": {"messages": [
+                   AIMessage(content=f"[{self.role}] {err}")]}}}
+        yield {"event": "on_chain_end", "name": "LangGraph", "data": {}}
+
+
+def test_worker_done_flattens_error_json(client, monkeypatch):
+    monkeypatch.setattr(
+        a2a_team, "build_a2a_supervisor", lambda *a, **k: _ErrHandoffAgent(role="recon")
+    )
+    sid = client.post("/chat", json={"message": "audita"}).json()["session_id"]
+    done = [e["data"] for e in chat_server.get_events(sid)
+            if e["event"] == "agent.activity" and e["data"]["action"] == "done"]
+    assert done and done[0]["detail"].startswith("error: ConnectError")
+
+
 def test_worker_activity_correlation_failure_is_soft(client, monkeypatch):
     monkeypatch.setattr(
         a2a_team, "build_a2a_supervisor", lambda *a, **k: _HandoffAgent(role="vuln")

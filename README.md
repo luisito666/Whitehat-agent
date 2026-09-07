@@ -1,5 +1,17 @@
 # pentest-agent
 
+> ## ⚠️ DEPRECATED
+>
+> **Este proyecto está deprecado y ya no recibe mantenimiento activo.**
+>
+> El desarrollo se migra por completo a **JavaScript/TypeScript**. Las herramientas
+> core (LangGraph, protocolo A2A, MCP, etc.) también están disponibles en JS, y
+> trabajar sobre ese stack permite generar un **binario/compilado distribuible más
+> fácil de usar** (un solo ejecutable, sin gestionar entornos de Python).
+>
+> Este repositorio se mantiene únicamente como referencia histórica. Para nuevo
+> trabajo, usa la versión en JS.
+
 PoC de **auditoría de seguridad multi-agente** con LangGraph + **protocolo A2A**:
 
 ```
