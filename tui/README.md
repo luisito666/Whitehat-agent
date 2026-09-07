@@ -4,8 +4,26 @@ Terminal chat UI (Ink + React 19) for the Whitehat pentest supervisor. Talks to 
 FastAPI sidecar (`chat_server.py`, default `:9000`): `/status`, `/chat`,
 SSE `/chat/{sid}/events`, `/engagement`, `/ledger`.
 
-This is the Task 7 scaffold: a minimal "hello chat" boot placeholder. The chat loop,
-approve-gate, SSE live mode and ledger view land in Tasks 8–11.
+Task 8 adds the basic chat loop: `src/api.ts` (HTTP client), `src/bus.tsx` (UI
+state machine + context), and the `ChatLog` / `ChatInput` components wired up in
+`src/App.tsx`. The approve-gate, live SSE mode and ledger view land in Tasks 9–11.
+
+### Chat loop state machine (`src/bus.tsx`)
+
+```
+boot ─DISCOVER_OK→ ready              ready ─SUBMIT→ thinking
+boot ─DISCOVER_FAIL→ discovering      thinking ─DELTA→ streaming (accumulates)
+discovering ─DISCOVER_OK→ ready       streaming ─DELTA→ streaming (accumulates)
+discovering ─DISCOVER_FAIL ×3→ down   (thinking|streaming) ─DONE→ ready
+down ─DISCOVER_OK→ ready              (thinking|streaming) ─ERROR→ ready (+visible)
+```
+
+Ctrl+C exits (raw-mode cleanup via `useApp().exit()`); it is a component concern,
+not a reducer action.
+
+Until Task 10 wires a live `EventSource`, `App.tsx` reads the turn's events by
+polling `GET /chat/{sid}/events?cursor=` every 500ms and parsing the
+`text/event-stream` frames by hand (`parseSse` in `src/api.ts`).
 
 ## Requirements
 
@@ -45,6 +63,23 @@ pnpm typecheck
 
 Both must be green. That is the authoritative check for this scaffold — do **not**
 rely on `pnpm dev` in an environment without a TTY.
+
+## E2E against the real sidecar (deterministic)
+
+`scripts/e2e-chat.ts` drives the real sidecar through `src/api.ts`
+(`getStatus` → `postChat` → read events until `chat.done`). Run it against a
+throwaway deterministic sidecar (no LLM, no network):
+
+```sh
+# from the repo root
+PENTEST_CHAT_DETERMINISTIC=1 PENTEST_CHAT_PORT=9111 \
+  .venv/bin/python -m pentest_agent.chat_server > /tmp/sidecar.log 2>&1 &
+SIDECAR=$!
+( cd tui && PENTEST_TUI_URL=http://127.0.0.1:9111 pnpm exec tsx scripts/e2e-chat.ts )
+kill $SIDECAR
+```
+
+Expected tail: `final assistant text: "pong: hola sidecar"` then `[e2e] OK`.
 
 ## Note on the Ink version
 
