@@ -269,15 +269,72 @@ lectura**. Es presentación pura — no ejecuta tools y **jamás aprueba nada**
 `127.0.0.1:9000`) que mantiene el estado de la conversación y expone contrato v1
 (`/status`, `/chat`, SSE `/chat/{sid}/events`, `/engagement`, `/ledger`).
 
+### Preparación (una vez)
+
 ```bash
-.venv/bin/python -m pentest_agent.chat_server     # 1) sidecar de chat (:9000)
-cd tui && pnpm install                            # 2) deps de la TUI (una vez)
-pnpm dev                                          # 3) la TUI (requiere TTY)
+# backend (si no existe .venv; mismo stack que los tests)
+uv venv && uv pip install -e ".[dev,mcp]" langgraph-supervisor
+
+# pnpm para la TUI (requiere Node 22+)
+corepack enable && corepack prepare pnpm@latest --activate
+
+# dependencias de la TUI
+cd tui && pnpm install && cd ..
 ```
 
-`PENTEST_TUI_URL` apunta la TUI a otro host/puerto. Empaquetado:
-`cd tui && pnpm build` → `dist/pentest-chat.js` (un archivo, `#!/usr/bin/env node`).
-Detalle completo (teclas, E2E deterministas, packaging) en
+### Arranque completo
+
+La TUI **no levanta el stack**: lo descubre polleando `GET /status` cada 2s.
+Tres procesos (terminales separadas, tmux, etc.), desde la raíz del repo:
+
+```bash
+# 1) workers A2A — recon :9101, vuln :9102, reporter :9103
+bash scripts/start_a2a_stack.sh
+
+# 2) sidecar de chat (127.0.0.1:9000; GLM_API_KEY en env o ~/.hermes/.env)
+.venv/bin/python -m pentest_agent.chat_server
+
+# 3) la TUI (terminal interactiva)
+cd tui && pnpm dev
+```
+
+Sin el paso 1 la TUI arranca igual, pero el supervisor no tendrá a quién
+delegar (workers ○ down en la vista `s`). El exploit worker (:9104) se añade
+como siempre: `A2A_EXPLOIT_URL` + approve.py (ver «Modo ofensivo»).
+
+### Teclas
+
+| Tecla | Acción |
+|---|---|
+| `Enter` | enviar el mensaje (solo en `ready`; input vacío se ignora) |
+| `Ctrl+P` | puerta de aprobación (solo lectura): engagement vigente o instrucciones fail-closed |
+| `l` | ledger — últimas entradas de `reports/evidence.jsonl` |
+| `s` | overview — workers ●up/○down, engagement, session_id, protocolo |
+| `r` | refrescar el ledger (dentro de la vista ledger) |
+| `Esc` | cerrar la vista actual, volver al chat |
+| `Ctrl+C` | salir (restaura raw mode) |
+
+`l`/`s` solo actúan con el **input vacío** y en `ready` — un mensaje puede
+empezar con esas letras.
+
+### Binario standalone
+
+```bash
+cd tui && pnpm build                     # -> dist/pentest-chat.js (un archivo, executable)
+node dist/pentest-chat.js                # mismo comportamiento que pnpm dev
+node dist/pentest-chat.js --version      # humo de packaging, sin TTY
+node dist/pentest-chat.js --help         # teclas + PENTEST_TUI_URL
+```
+
+### Variables de entorno
+
+| Var | Default | Qué |
+|---|---|---|
+| `PENTEST_TUI_URL` | `http://127.0.0.1:9000` | URL del sidecar para la TUI |
+| `PENTEST_CHAT_HOST` / `PENTEST_CHAT_PORT` | `127.0.0.1` / `9000` | bind del sidecar |
+| `PENTEST_CHAT_DETERMINISTIC` | — | `1` = sidecar eco sin LLM ni red (test/CI, nunca producción) |
+
+Contrato completo, E2E deterministas y detalle de packaging en
 [`tui/README.md`](tui/README.md).
 
 ## Limitaciones honestas (roadmap)
