@@ -6,7 +6,29 @@ SSE `/chat/{sid}/events`, `/engagement`, `/ledger`.
 
 Task 8 adds the basic chat loop: `src/api.ts` (HTTP client), `src/bus.tsx` (UI
 state machine + context), and the `ChatLog` / `ChatInput` components wired up in
-`src/App.tsx`. The approve-gate, live SSE mode and ledger view land in Tasks 9–11.
+`src/App.tsx`. Live SSE mode and the ledger view land in Tasks 10–11.
+
+### Approve gate (Task 9)
+
+`src/components/ApproveGate.tsx` is a **read-only** screen (D5, "UI fail-closed"):
+the TUI never approves anything. Ctrl+P toggles it from any view (handler in
+`App.tsx`), Esc closes it back to the chat. On mount it fetches `GET /engagement`
+(spinner while loading), then shows:
+
+- **green banner** if an engagement is in force — id, client, validity window,
+  `auth_reference`, and whether operator approval (`PENTEST_EXPLOIT_APPROVED`) is
+  present;
+- **red banner** on 404 (or an unreachable sidecar) — the fail-closed procedure:
+  create `engagement.yaml`, run `python -m pentest_agent.approve`, and note that
+  approval is confirmed **only in person, in the exploit server process**.
+
+The view axis lives on the reducer (`view: 'chat' | 'approve'`, actions
+`TOGGLE_VIEW` / `CLOSE_VIEW`) so it is unit-testable without a render. While the
+gate is open `ChatInput` is unmounted, so input is disabled.
+
+`App.tsx` also renders a one-line **status bar** (always visible): the run state
+(`ready` / `thinking` / `streaming` / `down` / `connecting`) plus the engagement
+from the last `/status` poll — green `id · client`, or red `sin engagement`.
 
 ### Chat loop state machine (`src/bus.tsx`)
 
@@ -16,6 +38,12 @@ boot ─DISCOVER_FAIL→ discovering      thinking ─DELTA→ streaming (accumu
 discovering ─DISCOVER_OK→ ready       streaming ─DELTA→ streaming (accumulates)
 discovering ─DISCOVER_FAIL ×3→ down   (thinking|streaming) ─DONE→ ready
 down ─DISCOVER_OK→ ready              (thinking|streaming) ─ERROR→ ready (+visible)
+```
+
+The view is a separate axis on the same state (a turn keeps running underneath):
+
+```
+chat ─TOGGLE_VIEW (Ctrl+P)→ approve    approve ─TOGGLE_VIEW / CLOSE_VIEW (Esc)→ chat
 ```
 
 Ctrl+C exits (raw-mode cleanup via `useApp().exit()`); it is a component concern,
@@ -80,6 +108,29 @@ kill $SIDECAR
 ```
 
 Expected tail: `final assistant text: "pong: hola sidecar"` then `[e2e] OK`.
+
+### E2E for the approve gate
+
+`scripts/e2e-engagement.ts` drives `GET /engagement` and prints what the banner
+would render. Run it twice against a deterministic sidecar:
+
+```sh
+# from the repo root — WITH an engagement in force
+cp tests/fixtures/engagement.valid.yaml /tmp/eng.yaml
+PENTEST_CHAT_DETERMINISTIC=1 PENTEST_CHAT_PORT=9112 PENTEST_ENGAGEMENT_FILE=/tmp/eng.yaml \
+  .venv/bin/python -m pentest_agent.chat_server > /tmp/sidecar.log 2>&1 &
+( cd tui && PENTEST_TUI_URL=http://127.0.0.1:9112 pnpm exec tsx scripts/e2e-engagement.ts )
+
+# WITHOUT one (no PENTEST_ENGAGEMENT_FILE, no engagement.yaml in cwd) -> null (404)
+PENTEST_CHAT_DETERMINISTIC=1 PENTEST_CHAT_PORT=9113 \
+  .venv/bin/python -m pentest_agent.chat_server > /tmp/sidecar.log 2>&1 &
+( cd tui && PENTEST_TUI_URL=http://127.0.0.1:9113 pnpm exec tsx scripts/e2e-engagement.ts )
+
+pkill -f pentest_agent.chat_server
+```
+
+Expected: the first run prints `id=ENG-FIXTURE-2026-009 … auth_reference=roE-fixture-tui-v1`,
+the second prints `null (404) -> fail-closed banner: run approve.py`. Both end `[e2e] OK`.
 
 ## Note on the Ink version
 

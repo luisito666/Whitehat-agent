@@ -1,7 +1,8 @@
 /**
  * One-line text input driven by Ink's useInput.
  *   - Enter  : submit (only while `ready`; blank input ignored)
- *   - Ctrl+P : reserved for the approve-gate (Task 9) — swallowed here
+ *   - Ctrl+P : approve-gate toggle — handled in App; swallowed here so it never
+ *     lands in the buffer
  *   - Ctrl+C : exit, restoring raw mode via useApp().exit()
  *   - Backspace/Delete edit the buffer
  */
@@ -26,7 +27,7 @@ export function ChatInput({ ready, onSubmit }: Props): ReactNode {
       return;
     }
     if (key.ctrl && input === 'p') {
-      // Reserved: approve-gate lands in Task 9.
+      // App owns the approve-gate toggle; just don't type a "p".
       return;
     }
     if (key.return) {

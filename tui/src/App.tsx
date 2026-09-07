@@ -9,7 +9,7 @@
  */
 import { useCallback, useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text, useInput } from 'ink';
 import {
   fetchEvents,
   getStatus,
@@ -17,6 +17,7 @@ import {
   type Status,
 } from './api.js';
 import { useBus, type UiState } from './bus.js';
+import { ApproveGate } from './components/ApproveGate.js';
 import { ChatLog } from './components/ChatLog.js';
 import { ChatInput } from './components/ChatInput.js';
 
@@ -48,6 +49,43 @@ function phaseLabel(state: UiState): string {
     case 'streaming':
       return 'streaming…';
   }
+}
+
+/** Short status word for the always-on status bar. */
+function stateWord(phase: UiState['phase']): string {
+  switch (phase) {
+    case 'boot':
+    case 'discovering':
+      return 'connecting';
+    case 'down':
+      return 'down';
+    default:
+      return phase; // ready | thinking | streaming
+  }
+}
+
+/**
+ * One always-visible line: run state + engagement from the last /status poll
+ * (green id/client, or red "sin engagement"). Task 11 promotes this to its own
+ * StatusBar component with the worker overview.
+ */
+function StatusLine({ state }: { state: UiState }): ReactNode {
+  const eng = state.status?.engagement;
+  return (
+    <Text>
+      <Text dimColor>estado </Text>
+      {stateWord(state.phase)}
+      <Text dimColor> · engagement </Text>
+      {eng?.id ? (
+        <Text color="green">
+          {eng.id}
+          {eng.client ? ` · ${eng.client}` : ''}
+        </Text>
+      ) : (
+        <Text color="red">sin engagement</Text>
+      )}
+    </Text>
+  );
 }
 
 export function App(): ReactNode {
@@ -140,14 +178,27 @@ export function App(): ReactNode {
     [dispatch, runTurn],
   );
 
+  // Ctrl+P toggles the approve gate from anywhere; Esc-to-close lives in
+  // ApproveGate. While the gate is open ChatInput is unmounted (input disabled).
+  useInput((input, key) => {
+    if (key.ctrl && input === 'p') dispatch({ type: 'TOGGLE_VIEW' });
+  });
+
   return (
     <Box flexDirection="column" paddingX={1}>
       <Text>
         pentest-chat — protocol 1 <Text dimColor>· {phaseLabel(state)}</Text>
       </Text>
+      <StatusLine state={state} />
       {state.error ? <Text color="red">! {state.error}</Text> : null}
-      <ChatLog history={state.history} assistantBuf={state.assistantBuf} />
-      <ChatInput ready={state.phase === 'ready'} onSubmit={handleSubmit} />
+      {state.view === 'approve' ? (
+        <ApproveGate onClose={() => dispatch({ type: 'CLOSE_VIEW' })} />
+      ) : (
+        <>
+          <ChatLog history={state.history} assistantBuf={state.assistantBuf} />
+          <ChatInput ready={state.phase === 'ready'} onSubmit={handleSubmit} />
+        </>
+      )}
     </Box>
   );
 }

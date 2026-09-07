@@ -129,3 +129,36 @@ describe('bus reducer edges', () => {
     );
   });
 });
+
+describe('bus reducer — view axis (approve gate)', () => {
+  test('starts on the chat view', () => {
+    expect(initialState.view).toBe('chat');
+  });
+
+  test('TOGGLE_VIEW flips chat <-> approve', () => {
+    const open = reducer(initialState, { type: 'TOGGLE_VIEW' });
+    expect(open.view).toBe('approve');
+    expect(reducer(open, { type: 'TOGGLE_VIEW' }).view).toBe('chat');
+  });
+
+  test('CLOSE_VIEW returns to chat from approve, no-ops on chat', () => {
+    const open = reducer(initialState, { type: 'TOGGLE_VIEW' });
+    expect(reducer(open, { type: 'CLOSE_VIEW' }).view).toBe('chat');
+    // already on chat -> same reference (nothing to re-render)
+    expect(reducer(initialState, { type: 'CLOSE_VIEW' })).toBe(initialState);
+  });
+
+  test('toggling the view never disturbs an in-flight turn', () => {
+    const mid = run(
+      initialState,
+      { type: 'DISCOVER_OK', status: STATUS },
+      { type: 'SUBMIT', text: 'hi' },
+      { type: 'DELTA', text: 'half' },
+      { type: 'TOGGLE_VIEW' },
+    );
+    expect(mid.view).toBe('approve');
+    expect(mid.phase).toBe('streaming');
+    expect(mid.assistantBuf).toBe('half');
+    expect(mid.history).toEqual([{ kind: 'user', text: 'hi' }]);
+  });
+});

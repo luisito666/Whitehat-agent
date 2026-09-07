@@ -8,6 +8,16 @@
  *   discovering ─DISCOVER_FAIL(xN)→ down (thinking|streaming) ─DONE→ ready
  *   down ─DISCOVER_OK→ ready            (thinking|streaming) ─ERROR→ ready (+visible)
  *
+ * The visible view is a separate axis from `phase`, carried on the same state so
+ * it is testable in isolation (Task 9):
+ *
+ *   chat ─TOGGLE_VIEW (Ctrl+P)→ approve      approve ─TOGGLE_VIEW (Ctrl+P)→ chat
+ *   approve ─CLOSE_VIEW (Esc)→ chat          chat ─CLOSE_VIEW→ chat (no-op)
+ *
+ * The approve view is read-only (it never approves anything — D5). A turn can
+ * keep streaming underneath while it is open; toggling the view never touches
+ * `phase`, `history` or `assistantBuf`.
+ *
  * Ctrl+C (exit) is a component concern (raw-mode cleanup via useApp().exit()),
  * not a reducer action.
  */
@@ -28,6 +38,8 @@ export type Phase =
   | 'streaming'
   | 'down';
 
+export type View = 'chat' | 'approve';
+
 export type LineKind = 'user' | 'assistant' | 'activity' | 'error';
 
 export interface Line {
@@ -37,6 +49,8 @@ export interface Line {
 
 export interface UiState {
   phase: Phase;
+  /** Which screen is on top: the chat log or the read-only approve gate. */
+  view: View;
   status: Status | null;
   /** Completed chat lines, in order. */
   history: Line[];
@@ -53,6 +67,7 @@ export const DISCOVER_MAX_FAILS = 3;
 
 export const initialState: UiState = {
   phase: 'boot',
+  view: 'chat',
   status: null,
   history: [],
   assistantBuf: '',
@@ -67,7 +82,9 @@ export type Action =
   | { type: 'DELTA'; text: string }
   | { type: 'ACTIVITY'; role: string; action: string; detail?: string }
   | { type: 'DONE' }
-  | { type: 'ERROR'; detail: string };
+  | { type: 'ERROR'; detail: string }
+  | { type: 'TOGGLE_VIEW' }
+  | { type: 'CLOSE_VIEW' };
 
 const IN_TURN: ReadonlySet<Phase> = new Set<Phase>(['thinking', 'streaming']);
 
@@ -138,6 +155,15 @@ export function reducer(state: UiState, action: Action): UiState {
       const phase: Phase =
         state.phase === 'ready' || IN_TURN.has(state.phase) ? 'ready' : state.phase;
       return { ...state, phase, error: action.detail, assistantBuf: '', history };
+    }
+
+    case 'TOGGLE_VIEW': {
+      // Only flips the view; a turn in flight keeps running underneath.
+      return { ...state, view: state.view === 'approve' ? 'chat' : 'approve' };
+    }
+
+    case 'CLOSE_VIEW': {
+      return state.view === 'chat' ? state : { ...state, view: 'chat' };
     }
 
     default:
