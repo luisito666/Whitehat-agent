@@ -12,6 +12,7 @@ dependencies = [
     "PyYAML>=6",
     "a2a-sdk[sqlite]==0.2.11",
     "uvicorn>=0.30",
+    "fastapi>=0.110",
 ]
 
 [project.optional-dependencies]
@@ -21,6 +22,7 @@ mcp = ["langchain-mcp-adapters>=0.3", "mcp>=1.29"]
 
 [project.scripts]
 pentest-audit = "pentest_agent.cli:main"
+pentest-chat-server = "pentest_agent.chat_server:run"
 
 [build-system]
 requires = ["hatchling"]
