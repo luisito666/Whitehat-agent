@@ -429,6 +429,84 @@ def test_worker_activity_correlation_failure_is_soft(client, monkeypatch):
     assert not any(e["event"] == "error" for e in events)
 
 
+# ---------------------------------------------------- proveedor sin streaming
+class _NoStreamAgent:
+    """Supervisor cuyo LLM NO hace streaming de tokens: el AIMessage final llega
+    entero en el on_chain_end del grafo, nunca como on_chat_model_stream."""
+
+    def __init__(self, text: str = "respuesta final del supervisor", final_kw: bool = False):
+        self.text = text
+        self.final_kw = final_kw
+
+    async def astream_events(self, inputs, config=None, version=None, **kw):
+        msg = AIMessage(content="" if self.final_kw else self.text)
+        if self.final_kw:
+            msg.additional_kwargs = {"final": self.text}
+        yield {
+            "event": "on_chain_end",
+            "name": "LangGraph",
+            "data": {"output": {"messages": [msg]}},
+        }
+
+
+def test_final_message_flushed_when_no_streaming(client, monkeypatch):
+    monkeypatch.setattr(
+        a2a_team, "build_a2a_supervisor", lambda *a, **k: _NoStreamAgent()
+    )
+
+    sid = client.post("/chat", json={"message": "hola"}).json()["session_id"]
+    events = chat_server.get_events(sid)
+
+    assert [e["event"] for e in events] == ["chat.delta", "chat.done"]
+    assert events[0]["data"]["text"] == "respuesta final del supervisor"
+
+
+def test_final_message_flush_prefers_finish_summary(client, monkeypatch):
+    monkeypatch.setattr(
+        a2a_team,
+        "build_a2a_supervisor",
+        lambda *a, **k: _NoStreamAgent(text="resumen de finish", final_kw=True),
+    )
+
+    sid = client.post("/chat", json={"message": "hola"}).json()["session_id"]
+    events = chat_server.get_events(sid)
+
+    assert [e["event"] for e in events] == ["chat.delta", "chat.done"]
+    assert events[0]["data"]["text"] == "resumen de finish"
+
+
+def test_no_double_text_when_streaming_present(client, monkeypatch):
+    """Con streaming real (StubAgent emite chunks) NO se vuelca texto extra."""
+    monkeypatch.setattr(a2a_team, "build_a2a_supervisor", lambda *a, **k: _StubAgent())
+
+    sid = client.post("/chat", json={"message": "hola"}).json()["session_id"]
+    events = chat_server.get_events(sid)
+
+    assert [e["event"] for e in events] == ["chat.delta", "chat.delta", "chat.done"]
+
+
+def test_sse_emits_heartbeat_during_quiet_stretch(client, monkeypatch):
+    """Un tramo sin eventos emite comentarios `: ping` para no dejar la
+    conexion muda (el cliente los ignora)."""
+
+    class _SlowAgent:
+        async def astream_events(self, inputs, config=None, version=None, **kw):
+            import asyncio as _a
+
+            await _a.sleep(0.25)  # el turno calla mientras el SSE hace long-poll
+            yield {"event": "on_chain_end", "name": "LangGraph", "data": {}}
+
+    monkeypatch.setattr(a2a_team, "build_a2a_supervisor", lambda *a, **k: _SlowAgent())
+    monkeypatch.setattr(chat_server, "_SSE_HEARTBEAT_SECONDS", 0.05)
+    monkeypatch.setattr(chat_server, "_SSE_MAX_SECONDS", 0.4)
+
+    sid = client.post("/chat", json={"message": "hola"}).json()["session_id"]
+    with client.stream("GET", f"/chat/{sid}/events") as resp:
+        raw = "".join(resp.iter_text())
+
+    assert ": ping" in raw
+
+
 # --------------------------------------------------------------------- Task 6
 # E2E: el sidecar COMO PROCESO REAL (subprocess) en modo determinista, sin LLM
 # ni red. Ejercita /status -> POST /chat -> SSE completo hasta chat.done.

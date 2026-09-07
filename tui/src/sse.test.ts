@@ -119,6 +119,52 @@ describe('streamEvents reconnect', () => {
     expect(h.onClose).toHaveBeenCalledOnce();
   });
 
+  // A clean long-poll recycle that delivered nothing but a heartbeat comment —
+  // exactly what the sidecar sends during a quiet stretch of a turn.
+  const heartbeatRes = (): ReturnType<typeof streamRes> => streamRes([': ping\n\n']);
+
+  test('benign long-poll recycles do not spend the failure budget (quiet turn survives)', async () => {
+    // 10 clean closes that deliver nothing — a multi-minute quiet turn — then
+    // the terminal frame. The old 3-attempt budget would have given up at #3.
+    const fetchFn = vi.fn();
+    for (let i = 0; i < 10; i++) fetchFn.mockResolvedValueOnce(heartbeatRes());
+    fetchFn.mockResolvedValueOnce(streamRes([frame(1, 'chat.done', {})]));
+    vi.stubGlobal('fetch', fetchFn);
+    const h = collector();
+
+    await streamEvents('sid', 0, h, new AbortController().signal, {
+      idleReconnectMs: 0,
+      maxAttempts: 3,
+    });
+
+    expect(fetchFn).toHaveBeenCalledTimes(11);
+    expect(h.events.map((e) => e[1])).toEqual(['chat.done']);
+    expect(h.onClose).toHaveBeenCalledOnce();
+    expect(h.onReconnecting).toHaveBeenCalled();
+  });
+
+  test('a clean recycle resets the failure budget accrued from earlier drops', async () => {
+    // 2 real failures, then a clean (heartbeat-only) recycle, then an unbroken
+    // run of failures. The clean recycle must zero the counter so the give-up
+    // point is a *fresh* maxAttempts+1 drops after it (call #3), i.e. fetch #7.
+    const fetchFn = vi.fn().mockRejectedValue(new Error('drop'));
+    fetchFn
+      .mockRejectedValueOnce(new Error('drop'))
+      .mockRejectedValueOnce(new Error('drop'))
+      .mockResolvedValueOnce(heartbeatRes());
+    vi.stubGlobal('fetch', fetchFn);
+    const h = collector();
+
+    await streamEvents('sid', 0, h, new AbortController().signal, {
+      backoffMs: [1, 1, 1],
+      idleReconnectMs: 0,
+      maxAttempts: 3,
+    });
+
+    expect(fetchFn).toHaveBeenCalledTimes(7);
+    expect(h.onClose).toHaveBeenCalledOnce();
+  });
+
   test('backoff is 500ms → 1s → 2s and gives up (onClose) after 3 attempts', async () => {
     vi.useFakeTimers();
     const fetchFn = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));

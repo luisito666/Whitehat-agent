@@ -12,10 +12,21 @@
  * A close whose last frame was `chat.done` / `error` is the real end of the
  * turn: `onClose()` fires and we stop.
  *
- * Reconnect budget: MAX_ATTEMPTS consecutive failed/empty reconnects with a
- * 500ms → 1s → 2s backoff. A reconnect that actually delivers new events resets
- * the budget (a slow multi-minute turn keeps streaming). Once the budget is
- * spent we give up with a plain `onClose()`.
+ * Two distinct budgets, because the two failure shapes are not the same:
+ *
+ *   - **Real failures** (fetch rejects, non-OK HTTP, a drain that throws
+ *     mid-stream): `maxAttempts` consecutive ones with a 500ms → 1s → 2s
+ *     backoff, then we give up with a plain `onClose()`.
+ *   - **Benign long-poll recycles** (fetch + drain completed cleanly, just no
+ *     terminal frame): NOT a failure. A real audit has multi-minute silent
+ *     stretches — recon/nmap, NVD correlation, report generation — where the
+ *     sidecar streams nothing for a whole 55s window. Counting those against
+ *     the failure budget killed the connection after ~3×55s while the turn was
+ *     still running server-side. They now reconnect from the cursor without
+ *     spending the failure budget; only `maxIdleCycles` (a very high absolute
+ *     ceiling, ~hours) bounds them so a truly wedged stream still ends.
+ *
+ * A reconnect that delivers fresh events resets both budgets.
  */
 import { BASE_URL, ApiError, parseSse, type ChatEvent } from './api.js';
 
@@ -36,12 +47,22 @@ export interface SseHandlers {
 export interface StreamOptions {
   /** Backoff ladder in ms; the last value repeats. Default 500 / 1000 / 2000. */
   backoffMs?: number[];
-  /** Consecutive failed reconnects tolerated before giving up. Default 3. */
+  /** Consecutive *real* failed reconnects tolerated before giving up. Default 3. */
   maxAttempts?: number;
+  /** Delay before reconnecting after a benign long-poll recycle. Default 1000. */
+  idleReconnectMs?: number;
+  /**
+   * Absolute ceiling on consecutive benign long-poll recycles that delivered
+   * nothing — a safety net for a wedged-but-clean stream, not a real limit.
+   * Default 250 (~4h at one 55s window per cycle).
+   */
+  maxIdleCycles?: number;
 }
 
 export const DEFAULT_BACKOFF_MS: readonly number[] = [500, 1000, 2000];
 export const DEFAULT_MAX_ATTEMPTS = 3;
+export const DEFAULT_IDLE_RECONNECT_MS = 1000;
+export const DEFAULT_MAX_IDLE_CYCLES = 250;
 
 const TERMINAL = new Set(['chat.done', 'error']);
 
@@ -102,6 +123,8 @@ export async function streamEvents(
 ): Promise<void> {
   const backoff = opts.backoffMs ?? [...DEFAULT_BACKOFF_MS];
   const maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+  const idleReconnectMs = opts.idleReconnectMs ?? DEFAULT_IDLE_RECONNECT_MS;
+  const maxIdleCycles = opts.maxIdleCycles ?? DEFAULT_MAX_IDLE_CYCLES;
   const path = `/chat/${encodeURIComponent(sessionId)}/events`;
 
   // Internal controller: aborted in `finally` so a lingering fetch/stream is
@@ -115,7 +138,8 @@ export async function streamEvents(
 
   let lastEventId = cursor;
   let lastEventName = '';
-  let attempt = 0;
+  let failAttempt = 0; // consecutive real failures (fetch reject / non-OK / drain throw)
+  let idleCycles = 0; // consecutive benign long-poll recycles that delivered nothing
   let reconnecting = false;
 
   try {
@@ -123,6 +147,7 @@ export async function streamEvents(
       if (signal.aborted) return;
 
       const before = lastEventId;
+      let clean = false;
       try {
         const res = await fetch(`${BASE_URL}${path}?cursor=${lastEventId}`, {
           headers: { accept: 'text/event-stream' },
@@ -140,8 +165,12 @@ export async function streamEvents(
           }
           handlers.onEvent(ev.id, ev.event, ev.data);
         });
+        // fetch + drain returned without throwing: the server closed the stream
+        // on its own terms (long-poll deadline or a terminal frame), not a drop.
+        clean = true;
       } catch {
-        // Network/HTTP failure: treated the same as a non-terminal close.
+        // Network / HTTP / mid-stream failure — a real error, distinct from the
+        // server's benign ~55s long-poll close handled by the `clean` branch.
       }
 
       if (signal.aborted) return;
@@ -151,20 +180,40 @@ export async function streamEvents(
         return;
       }
 
-      // A reconnect that delivered fresh events earns a clean slate.
-      if (lastEventId > before) attempt = 0;
+      const gotEvents = lastEventId > before;
 
-      if (attempt >= maxAttempts) {
-        handlers.onClose();
-        return;
+      if (clean) {
+        // Benign long-poll recycle. Not a failure: reconnect from the cursor
+        // without touching the failure budget so a multi-minute quiet turn
+        // survives. Only the absolute idle ceiling can end it.
+        failAttempt = 0;
+        idleCycles = gotEvents ? 0 : idleCycles + 1;
+        if (idleCycles >= maxIdleCycles) {
+          handlers.onClose();
+          return;
+        }
+      } else {
+        // Real failure: bounded retries with the backoff ladder. Fresh events
+        // before the drop still earn a clean slate.
+        if (gotEvents) failAttempt = 0;
+        if (failAttempt >= maxAttempts) {
+          handlers.onClose();
+          return;
+        }
       }
 
       if (!reconnecting) {
         reconnecting = true;
         handlers.onReconnecting?.();
       }
-      const wait = backoff[Math.min(attempt, backoff.length - 1)];
-      attempt += 1;
+
+      let wait: number;
+      if (clean) {
+        wait = gotEvents ? 0 : idleReconnectMs;
+      } else {
+        wait = backoff[Math.min(failAttempt, backoff.length - 1)];
+        failAttempt += 1;
+      }
       await sleep(wait, signal);
     }
   } finally {
