@@ -8,6 +8,11 @@ Task 3: GET /chat/{sid}/events -> SSE (text/event-stream) con replay por cursor.
 from __future__ import annotations
 
 import json
+import os
+import socket
+import subprocess
+import sys
+import time
 
 import httpx
 import pytest
@@ -422,3 +427,108 @@ def test_worker_activity_correlation_failure_is_soft(client, monkeypatch):
     # la correlacion reventada solo pierde el evento extra: el turno completa
     assert events[-1]["event"] == "chat.done"
     assert not any(e["event"] == "error" for e in events)
+
+
+# --------------------------------------------------------------------- Task 6
+# E2E: el sidecar COMO PROCESO REAL (subprocess) en modo determinista, sin LLM
+# ni red. Ejercita /status -> POST /chat -> SSE completo hasta chat.done.
+
+def _free_port(preferred: int = 9000) -> int:
+    """Puerto libre en loopback: intenta `preferred`, si no, uno efimero."""
+    for candidate in (preferred, 0):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            try:
+                sock.bind(("127.0.0.1", candidate))
+                return sock.getsockname()[1]
+            except OSError:
+                continue
+    raise RuntimeError("no free TCP port on 127.0.0.1")
+
+
+@pytest.fixture
+def sidecar_url(tmp_path):
+    """Lanza `python -m pentest_agent.chat_server` como proceso real en modo
+    determinista (PENTEST_CHAT_DETERMINISTIC=1) sobre un puerto libre y espera
+    readiness polleando GET /status (timeout 30s). El proceso SIEMPRE se mata en
+    teardown; si arranca mal, se imprime su stdout/stderr para debugging."""
+    port = _free_port(9000)
+    env = os.environ.copy()
+    env["PENTEST_CHAT_DETERMINISTIC"] = "1"
+    env["PENTEST_CHAT_HOST"] = "127.0.0.1"
+    env["PENTEST_CHAT_PORT"] = str(port)
+    # el proceso hijo no debe ver ningun engagement.yaml del entorno
+    env["PENTEST_ENGAGEMENT_FILE"] = str(tmp_path / "no-engagement.yaml")
+    env.pop("A2A_EXPLOIT_URL", None)
+
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "pentest_agent.chat_server"],
+        cwd=str(tmp_path),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    base = f"http://127.0.0.1:{port}"
+
+    def _dump_and_fail(reason: str) -> None:
+        try:
+            out, err = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate()
+        pytest.fail(
+            f"{reason}\nrc={proc.returncode}\n"
+            f"--- sidecar stdout ---\n{out}\n--- sidecar stderr ---\n{err}"
+        )
+
+    try:
+        deadline = time.monotonic() + 30.0
+        last_err: Exception | None = None
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                _dump_and_fail("sidecar exited before becoming ready")
+            try:
+                resp = httpx.get(f"{base}/status", timeout=5.0)
+                if resp.status_code == 200:
+                    break
+                last_err = RuntimeError(f"/status -> {resp.status_code}")
+            except httpx.HTTPError as exc:
+                last_err = exc
+            time.sleep(0.3)
+        else:
+            _dump_and_fail(f"sidecar not ready after 30s (last error: {last_err!r})")
+        yield base
+    finally:
+        proc.kill()
+        try:
+            proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.wait()
+
+
+def test_e2e_deterministic_status_chat_sse(sidecar_url):
+    base = sidecar_url
+
+    # /status -> 200, protocolo 1
+    st = httpx.get(f"{base}/status", timeout=10.0)
+    assert st.status_code == 200
+    assert st.json()["protocol"] == 1
+
+    # POST /chat {"message":"ping"} -> 200 con session_id
+    resp = httpx.post(f"{base}/chat", json={"message": "ping"}, timeout=30.0)
+    assert resp.status_code == 200
+    session_id = resp.json()["session_id"]
+    assert session_id
+
+    # GET /chat/{sid}/events -> stream completo hasta chat.done; el eco
+    # determinista responde "pong"
+    with httpx.stream("GET", f"{base}/chat/{session_id}/events", timeout=30.0) as stream:
+        raw = "".join(stream.iter_text())
+    events = _parse_sse(raw)
+
+    assert events, raw
+    assert events[-1]["event"] == "chat.done"
+    final_text = "".join(
+        e["data"].get("text", "") for e in events if e["event"] == "chat.delta"
+    )
+    assert "pong" in final_text
