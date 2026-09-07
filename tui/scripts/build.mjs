@@ -14,6 +14,10 @@
 import { chmodSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
+import { readFileSync } from 'node:fs';
+
+const tuiDir = fileURLToPath(new URL('..', import.meta.url));
+const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 
 const entry = fileURLToPath(new URL('../src/main.tsx', import.meta.url));
 const outfile = fileURLToPath(new URL('../dist/pentest-chat.js', import.meta.url));
@@ -33,7 +37,7 @@ const stubReactDevtools = {
       namespace: 'stub-rdt',
     }));
     b.onLoad({ filter: /.*/, namespace: 'stub-rdt' }, () => ({
-      contents: 'export default { initialize() {}, connectToDevTools() {} };',
+      contents: 'export default { initialize() {}, connectToDevtools() {} };',
       loader: 'js',
     }));
   },
@@ -49,6 +53,11 @@ await build({
   // external:none — everything but Node builtins goes in the bundle.
   minify: false,
   jsx: 'automatic',
+  define: {
+    // Baked into the bundle so `--version` works inside a Node SEA binary,
+    // where no package.json exists next to the entry (see src/cli.ts).
+    PKG_VERSION: JSON.stringify(pkg.version ?? '0.0.0'),
+  },
   banner: {
     // Shebang + a real `require` for the few CJS deps that call it (e.g.
     // signal-exit does `require('assert')`); esbuild's ESM output otherwise
@@ -64,4 +73,4 @@ await build({
 });
 
 chmodSync(outfile, 0o755);
-console.log(`built ${outfile}`);
+console.log(`built ${outfile} (version ${pkg.version})`);
