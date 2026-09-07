@@ -258,6 +258,28 @@ Smoke fase 2 (OSINT real contra tu dominio + msf sim con ledger):
 .venv/bin/python scripts/mcp_smoke_phase2.py   # SMOKE_DOMAIN=tudominio.co opcional
 ```
 
+## Chat TUI
+
+`tui/` es una **TUI de chat** (Ink 6 + React 19) para conversar con el
+**supervisor** mientras trabaja: renderiza la conversación, la actividad de los
+workers en vivo, el estado del engagement y una puerta de aprobación de **solo
+lectura**. Es presentación pura — no ejecuta tools y **jamás aprueba nada**
+(`POST /engagement/approve` siempre 501; la aprobación es presencial vía
+`approve.py`). Habla con un sidecar FastAPI (`pentest_agent.chat_server`, solo
+`127.0.0.1:9000`) que mantiene el estado de la conversación y expone contrato v1
+(`/status`, `/chat`, SSE `/chat/{sid}/events`, `/engagement`, `/ledger`).
+
+```bash
+.venv/bin/python -m pentest_agent.chat_server     # 1) sidecar de chat (:9000)
+cd tui && pnpm install                            # 2) deps de la TUI (una vez)
+pnpm dev                                          # 3) la TUI (requiere TTY)
+```
+
+`PENTEST_TUI_URL` apunta la TUI a otro host/puerto. Empaquetado:
+`cd tui && pnpm build` → `dist/pentest-chat.js` (un archivo, `#!/usr/bin/env node`).
+Detalle completo (teclas, E2E deterministas, packaging) en
+[`tui/README.md`](tui/README.md).
+
 ## Limitaciones honestas (roadmap)
 
 - Matching versión→CVE por keyword NVD; el camino robusto es CPE exacto

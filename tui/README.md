@@ -1,79 +1,41 @@
 # pentest-chat — TUI
 
-Terminal chat UI (Ink + React 19) for the Whitehat pentest supervisor. Talks to the
-FastAPI sidecar (`chat_server.py`, default `:9000`): `/status`, `/chat`,
-SSE `/chat/{sid}/events`, `/engagement`, `/ledger`.
+Terminal chat UI (Ink 6 + React 19) to talk to the Whitehat pentest **supervisor**
+while it works. You converse with the supervisor; the A2A workers
+(recon/vuln/reporter/exploit) are unchanged. The TUI is **presentation only** — it
+renders the conversation, live agent activity, engagement state and a **read-only**
+approve gate. It never runs a tool and never approves anything.
 
-Task 8 adds the basic chat loop: `src/api.ts` (HTTP client), `src/bus.tsx` (UI
-state machine + context), and the `ChatLog` / `ChatInput` components wired up in
-`src/App.tsx`. Task 10 adds live SSE mode with reconnect (`src/sse.ts`); the
-ledger view lands in Task 11.
-
-### Live SSE mode (Task 10)
-
-`src/sse.ts` `streamEvents()` reads `GET /chat/{sid}/events?cursor=` as a live
-`fetch` stream (not `EventSource` — Node's has no custom headers and no clean
-abort). It parses the `text/event-stream` incrementally (`parseSse`, re-exported
-here as `parseSSE`), tracking `lastEventId`. The sidecar long-polls ~55s then
-closes; on any non-terminal close it reconnects from `lastEventId` (the sidecar
-replays its per-session buffer, so a network blip loses no chat) with a
-500ms → 1s → 2s backoff, up to 3 consecutive failed attempts, then gives up with
-`onClose()`. A close whose last frame was `chat.done` / `error` is the real end
-of the turn.
-
-`App.tsx` swaps the old 500ms poll for `streamEvents`; the reducer gains
-`RECONNECTING` / `RECONNECTED` (flag `reconnecting`, force-cleared on
-`SUBMIT` / `DONE` / `ERROR`) and the status bar shows `reconectando…` while a
-reconnect is in flight.
-
-### Approve gate (Task 9)
-
-`src/components/ApproveGate.tsx` is a **read-only** screen (D5, "UI fail-closed"):
-the TUI never approves anything. Ctrl+P toggles it from any view (handler in
-`App.tsx`), Esc closes it back to the chat. On mount it fetches `GET /engagement`
-(spinner while loading), then shows:
-
-- **green banner** if an engagement is in force — id, client, validity window,
-  `auth_reference`, and whether operator approval (`PENTEST_EXPLOIT_APPROVED`) is
-  present;
-- **red banner** on 404 (or an unreachable sidecar) — the fail-closed procedure:
-  create `engagement.yaml`, run `python -m pentest_agent.approve`, and note that
-  approval is confirmed **only in person, in the exploit server process**.
-
-The view axis lives on the reducer (`view: 'chat' | 'approve'`, actions
-`TOGGLE_VIEW` / `CLOSE_VIEW`) so it is unit-testable without a render. While the
-gate is open `ChatInput` is unmounted, so input is disabled.
-
-`App.tsx` also renders a one-line **status bar** (always visible): the run state
-(`ready` / `thinking` / `streaming` / `down` / `connecting`) plus the engagement
-from the last `/status` poll — green `id · client`, or red `sin engagement`.
-
-### Chat loop state machine (`src/bus.tsx`)
+## Architecture
 
 ```
-boot ─DISCOVER_OK→ ready              ready ─SUBMIT→ thinking
-boot ─DISCOVER_FAIL→ discovering      thinking ─DELTA→ streaming (accumulates)
-discovering ─DISCOVER_OK→ ready       streaming ─DELTA→ streaming (accumulates)
-discovering ─DISCOVER_FAIL ×3→ down   (thinking|streaming) ─DONE→ ready
-down ─DISCOVER_OK→ ready              (thinking|streaming) ─ERROR→ ready (+visible)
+  ┌────────────┐   HTTP + SSE    ┌─────────────────────┐   LangGraph / A2A   ┌──────────┐
+  │  this TUI  │ ──────────────► │  chat sidecar :9000 │ ──────────────────► │ supervisor│
+  │  (Ink)     │ ◄────────────── │  chat_server.py     │ ◄───────────────── │ + workers │
+  └────────────┘                 └─────────────────────┘                     └──────────┘
 ```
 
-The view is a separate axis on the same state (a turn keeps running underneath):
+- The **sidecar** (`src/pentest_agent/chat_server.py`, loopback `127.0.0.1:9000`)
+  is a small FastAPI app that owns conversation state (in-memory, per `session_id`)
+  and speaks contract v1 (`X-Chat-Protocol: 1`):
+  - `GET  /status` — stack up?, workers up/down, engagement summary, `protocol`
+  - `POST /chat` `{session_id?, message}` → `{session_id, cursor}`
+  - `GET  /chat/{sid}/events?cursor=N` — SSE stream (`chat.delta`, `agent.activity`,
+    `chat.done`, `error`), incremental ids, replay from `cursor`
+  - `GET  /engagement` — public engagement view (no secrets); `404` when none
+  - `GET  /ledger?tail=N` — last N `reports/evidence.jsonl` entries
+  - `POST /engagement/approve` — **always `501`** (approval is in-person only)
+- The TUI **does not spawn the stack**. It discovers the sidecar by polling
+  `GET /status` every 2s; point it elsewhere with `PENTEST_TUI_URL`.
 
-```
-chat ─TOGGLE_VIEW (Ctrl+P)→ approve    approve ─TOGGLE_VIEW / CLOSE_VIEW (Esc)→ chat
-```
-
-Ctrl+C exits (raw-mode cleanup via `useApp().exit()`); it is a component concern,
-not a reducer action.
-
-`App.tsx` reads the turn's events with `streamEvents` (`src/sse.ts`); the pure
-frame parser is `parseSse` in `src/api.ts`.
+Client code: `src/api.ts` (HTTP), `src/sse.ts` (live SSE reader with reconnect),
+`src/bus.tsx` (reducer + context — the UI state machine), `src/cli.ts`
+(`--version` / `--help`), components under `src/components/`.
 
 ## Requirements
 
 - Node 22 (`v22.22.3` used here)
-- pnpm 12 (`corepack enable`; if `pnpm` is missing add `~/.hermes/node/bin` to `PATH`)
+- pnpm (`corepack enable`; if `pnpm` is missing add `~/.hermes/node/bin` to `PATH`)
 
 ## Install
 
@@ -82,90 +44,140 @@ cd tui
 pnpm install
 ```
 
-`esbuild` (pulled in by `tsx`/`vitest`) needs a post-install build step. It is
-pre-approved in `pnpm-workspace.yaml` (`allowBuilds: esbuild: true`), so a clean
-`pnpm install` runs it without an interactive prompt.
+`esbuild` (used by `tsx`, `vitest` and the packaging script) has a post-install
+build step; it is pre-approved in `pnpm-workspace.yaml` (`allowBuilds`), so a
+clean `pnpm install` runs it without a prompt.
+
+## Run (dev)
+
+Two terminals, from the **repo root**:
+
+```sh
+# 1) the chat sidecar (loopback :9000). Add the exploit worker etc. as usual.
+.venv/bin/python -m pentest_agent.chat_server
+
+# 2) the TUI (needs an interactive terminal / raw mode)
+cd tui && pnpm dev
+```
+
+`pnpm dev` is `tsx src/main.tsx`. To talk to a sidecar on another port/host:
+
+```sh
+PENTEST_TUI_URL=http://127.0.0.1:9131 pnpm dev
+```
+
+## Keys
+
+| Key      | Action                                                              |
+|----------|--------------------------------------------------------------------|
+| `Enter`  | send the message (only while `ready`; blank input ignored)          |
+| `Ctrl+P` | toggle the **approve gate** (read-only) from any view               |
+| `l`      | ledger view — tail of `reports/evidence.jsonl` (empty prompt only)  |
+| `s`      | status / overview — workers up·down, engagement, `session_id`       |
+| `r`      | reload the ledger (inside the ledger view)                          |
+| `Esc`    | close the current view, back to chat                                |
+| `Ctrl+C` | quit (restores raw mode)                                            |
+
+`l` / `s` only act on an **empty** prompt while `ready`, so a message can still
+start with those letters.
+
+## Environment
+
+| Var              | Default                  | Meaning                          |
+|------------------|--------------------------|----------------------------------|
+| `PENTEST_TUI_URL`| `http://127.0.0.1:9000`  | base URL of the chat sidecar     |
 
 ## Scripts
 
-| Command           | What it does                                  |
-|-------------------|-----------------------------------------------|
-| `pnpm dev`        | `tsx src/main.tsx` — runs the TUI (needs a TTY)|
-| `pnpm test`       | `vitest run` — headless render tests           |
-| `pnpm typecheck`  | `tsc --noEmit` — strict typecheck              |
+| Command          | What it does                                        |
+|------------------|----------------------------------------------------|
+| `pnpm dev`       | `tsx src/main.tsx` — run the TUI (needs a TTY)      |
+| `pnpm build`     | `node scripts/build.mjs` — bundle → `dist/pentest-chat.js` |
+| `pnpm test`      | `vitest run` — headless render / reducer tests      |
+| `pnpm typecheck` | `tsc --noEmit` — strict typecheck                   |
 
-## Verifying the render without a TTY
-
-`pnpm dev` needs an interactive terminal (raw mode) and will not run in CI or a
-non-interactive shell. The render is instead verified headlessly with
-`ink-testing-library` in `src/App.test.tsx`, which mounts the component and asserts
-on the rendered frame. Run:
+## Build / packaging
 
 ```sh
-pnpm test
-pnpm typecheck
+pnpm build          # -> dist/pentest-chat.js  (executable, #!/usr/bin/env node)
+node dist/pentest-chat.js --version   # -> "pentest-chat 0.1.0", exit 0
+node dist/pentest-chat.js --help      # -> usage: keys + PENTEST_TUI_URL
 ```
 
-Both must be green. That is the authoritative check for this scaffold — do **not**
-rely on `pnpm dev` in an environment without a TTY.
+`scripts/build.mjs` is a single **esbuild** bundle (`platform: node`,
+`format: esm`, `target: node22`, no minify): Ink, React and the fetch client are
+inlined, a `#!/usr/bin/env node` shebang is prepended and the file is `chmod +x`.
+`package.json` wires it as `bin.pentest-chat`.
 
-## E2E against the real sidecar (deterministic)
+> The plan said "`pastel bake` → `dist/pentest-chat`". **pastel
+> (vadimdemedes/pastel) has no `bake` / standalone-binary command** — it is a
+> file-routing framework whose `pastel build` only emits a `build/` directory of
+> JS that still needs `node`. The esbuild bundle above is the pragmatic
+> equivalent: one file, no `node_modules`, still needs `node` on `PATH` (the
+> Python backend is already a `pip install`).
 
-`scripts/e2e-chat.ts` drives the real sidecar through `src/api.ts`
-(`getStatus` → `postChat` → read events until `chat.done`). Run it against a
-throwaway deterministic sidecar (no LLM, no network):
+`dist/` is git-ignored (build artifact).
+
+### Verifying the render without a TTY
+
+`pnpm dev` / `node dist/pentest-chat.js` (no args) need an interactive terminal
+(raw mode) and will not render usefully in CI or a non-interactive shell. The
+**interactive render cannot be verified without a TTY.** What *is* verified
+headlessly:
+
+- `pnpm test` — `ink-testing-library` mounts the components and asserts on frames;
+  `src/cli.test.ts` covers `--version` / `--help`.
+- `pnpm typecheck` — strict.
+- `node dist/pentest-chat.js --version` → `pentest-chat 0.1.0`, exit 0 (no TTY,
+  no render). This is the packaging smoke test.
+
+Both `pnpm test` and `pnpm typecheck` must be green.
+
+## E2E against a real sidecar (deterministic, no LLM)
+
+All four scripts drive the real client code (`src/api.ts` / `src/sse.ts`) against
+a throwaway deterministic sidecar (`PENTEST_CHAT_DETERMINISTIC=1`, no LLM, no
+network). Run with `pnpm exec tsx scripts/<name>.ts`.
+
+| Script                        | What it exercises                                             |
+|-------------------------------|-------------------------------------------------------------|
+| `scripts/e2e-chat.ts`         | `getStatus` → `postChat` → read SSE until `chat.done`         |
+| `scripts/e2e-engagement.ts`   | `GET /engagement` — prints what the approve banner would show |
+| `scripts/e2e-sse-reconnect.ts`| live SSE, SIGKILL the sidecar mid-stream, resume from cursor  |
+| `scripts/e2e-ledger-overview.ts` | `GET /ledger` + `GET /status` — ledger rows + overview data |
+
+Example (`e2e-chat`, from the repo root):
 
 ```sh
-# from the repo root
-PENTEST_CHAT_DETERMINISTIC=1 PENTEST_CHAT_PORT=9111 \
+PENTEST_CHAT_DETERMINISTIC=1 PENTEST_CHAT_PORT=9131 \
   .venv/bin/python -m pentest_agent.chat_server > /tmp/sidecar.log 2>&1 &
-SIDECAR=$!
-( cd tui && PENTEST_TUI_URL=http://127.0.0.1:9111 pnpm exec tsx scripts/e2e-chat.ts )
-kill $SIDECAR
-```
-
-Expected tail: `final assistant text: "pong: hola sidecar"` then `[e2e] OK`.
-
-### E2E for the approve gate
-
-`scripts/e2e-engagement.ts` drives `GET /engagement` and prints what the banner
-would render. Run it twice against a deterministic sidecar:
-
-```sh
-# from the repo root — WITH an engagement in force
-cp tests/fixtures/engagement.valid.yaml /tmp/eng.yaml
-PENTEST_CHAT_DETERMINISTIC=1 PENTEST_CHAT_PORT=9112 PENTEST_ENGAGEMENT_FILE=/tmp/eng.yaml \
-  .venv/bin/python -m pentest_agent.chat_server > /tmp/sidecar.log 2>&1 &
-( cd tui && PENTEST_TUI_URL=http://127.0.0.1:9112 pnpm exec tsx scripts/e2e-engagement.ts )
-
-# WITHOUT one (no PENTEST_ENGAGEMENT_FILE, no engagement.yaml in cwd) -> null (404)
-PENTEST_CHAT_DETERMINISTIC=1 PENTEST_CHAT_PORT=9113 \
-  .venv/bin/python -m pentest_agent.chat_server > /tmp/sidecar.log 2>&1 &
-( cd tui && PENTEST_TUI_URL=http://127.0.0.1:9113 pnpm exec tsx scripts/e2e-engagement.ts )
-
+( cd tui && PENTEST_TUI_URL=http://127.0.0.1:9131 pnpm exec tsx scripts/e2e-chat.ts )
 pkill -f pentest_agent.chat_server
 ```
 
-Expected: the first run prints `id=ENG-FIXTURE-2026-009 … auth_reference=roE-fixture-tui-v1`,
-the second prints `null (404) -> fail-closed banner: run approve.py`. Both end `[e2e] OK`.
+Expected tail: `final assistant text: "pong: hola sidecar"` then `[e2e] OK`.
+`e2e-sse-reconnect.ts` and `e2e-ledger-overview.ts` are self-contained (they
+spawn and kill their own sidecars) — just `pnpm exec tsx scripts/<name>.ts`.
 
-### E2E for live SSE + reconnect
-
-`scripts/e2e-sse-reconnect.ts` is self-contained — it spawns and SIGKILLs its own
-deterministic sidecars. It streams a turn, kills the sidecar mid-flight (the
-reader must not crash — reconnect backs off then `onClose`s), then brings a fresh
-sidecar up and runs a clean turn to `chat.done`.
+Packaging smoke with the built binary:
 
 ```sh
-cd tui && pnpm exec tsx scripts/e2e-sse-reconnect.ts
+pnpm build && node dist/pentest-chat.js --version   # -> pentest-chat 0.1.0, exit 0
 ```
 
-Expected tail: `second turn text: "pong: otra vez" done=true` then `[e2e] OK`.
+## Fail-closed (non-negotiable)
+
+**This TUI never approves anything.** `POST /engagement/approve` is always `501`;
+the approve gate (`Ctrl+P`, `src/components/ApproveGate.tsx`) is read-only. It
+shows either the engagement in force (green banner) or the fail-closed procedure
+(red banner): create `engagement.yaml`, run `python -m pentest_agent.approve`,
+and note that approval is confirmed **only in person, in the exploit server
+process** (`PENTEST_EXPLOIT_APPROVED`). The LLM, the supervisor, the sidecar and
+this UI cannot inject it.
 
 ## Note on the Ink version
 
-The plan calls this "Ink v5 + React 19". Ink 5 ships `react-reconciler@0.29`, which
-targets React 18 internals (`ReactCurrentOwner`, `resolveUpdatePriority`) and crashes
-under React 19. Ink 6 is the first release to officially support React 19
-(`peerDependencies: react >=19.0.0`), so this scaffold uses `ink@^6`. React stays on
-19 as the plan requires.
+The plan calls this "Ink v5 + React 19". Ink 5 ships `react-reconciler@0.29`,
+which targets React 18 internals and crashes under React 19. Ink 6 is the first
+release to officially support React 19 (`peerDependencies: react >=19.0.0`), so
+this uses `ink@^6`. React stays on 19 as the plan requires.
