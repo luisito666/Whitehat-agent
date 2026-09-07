@@ -18,6 +18,9 @@ import { useBus, type UiState } from './bus.js';
 import { ApproveGate } from './components/ApproveGate.js';
 import { ChatLog } from './components/ChatLog.js';
 import { ChatInput } from './components/ChatInput.js';
+import { LedgerView } from './components/LedgerView.js';
+import { OverviewView } from './components/OverviewView.js';
+import { StatusBar } from './components/StatusBar.js';
 
 const STATUS_POLL_MS = 2000;
 
@@ -41,47 +44,6 @@ function phaseLabel(state: UiState): string {
     case 'streaming':
       return state.reconnecting ? 'reconectando…' : 'streaming…';
   }
-}
-
-/** Short status word for the always-on status bar. */
-function stateWord(phase: UiState['phase']): string {
-  switch (phase) {
-    case 'boot':
-    case 'discovering':
-      return 'connecting';
-    case 'down':
-      return 'down';
-    default:
-      return phase; // ready | thinking | streaming
-  }
-}
-
-/**
- * One always-visible line: run state + engagement from the last /status poll
- * (green id/client, or red "sin engagement"). Task 11 promotes this to its own
- * StatusBar component with the worker overview.
- */
-function StatusLine({ state }: { state: UiState }): ReactNode {
-  const eng = state.status?.engagement;
-  return (
-    <Text>
-      <Text dimColor>estado </Text>
-      {state.reconnecting ? (
-        <Text color="yellow">reconectando…</Text>
-      ) : (
-        stateWord(state.phase)
-      )}
-      <Text dimColor> · engagement </Text>
-      {eng?.id ? (
-        <Text color="green">
-          {eng.id}
-          {eng.client ? ` · ${eng.client}` : ''}
-        </Text>
-      ) : (
-        <Text color="red">sin engagement</Text>
-      )}
-    </Text>
-  );
 }
 
 export function App(): ReactNode {
@@ -129,6 +91,7 @@ export function App(): ReactNode {
           sessionRef.current ?? undefined,
         );
         sessionRef.current = session_id;
+        dispatch({ type: 'SESSION', sessionId: session_id });
 
         let sawTerminal = false;
         await streamEvents(
@@ -198,25 +161,40 @@ export function App(): ReactNode {
     [dispatch, runTurn],
   );
 
-  // Ctrl+P toggles the approve gate from anywhere; Esc-to-close lives in
-  // ApproveGate. While the gate is open ChatInput is unmounted (input disabled).
+  // Ctrl+P toggles the approve gate from anywhere; Esc-to-close lives in each
+  // view. While a non-chat view is open ChatInput is unmounted (input disabled).
+  // The `l` / `s` hotkeys are owned here too but routed through ChatInput's
+  // empty-prompt check so a message can still start with those letters.
   useInput((input, key) => {
     if (key.ctrl && input === 'p') dispatch({ type: 'TOGGLE_VIEW' });
   });
+
+  const closeView = useCallback(
+    () => dispatch({ type: 'CLOSE_VIEW' }),
+    [dispatch],
+  );
 
   return (
     <Box flexDirection="column" paddingX={1}>
       <Text>
         pentest-chat — protocol 1 <Text dimColor>· {phaseLabel(state)}</Text>
       </Text>
-      <StatusLine state={state} />
+      <StatusBar state={state} />
       {state.error ? <Text color="red">! {state.error}</Text> : null}
       {state.view === 'approve' ? (
-        <ApproveGate onClose={() => dispatch({ type: 'CLOSE_VIEW' })} />
+        <ApproveGate onClose={closeView} />
+      ) : state.view === 'ledger' ? (
+        <LedgerView onClose={closeView} />
+      ) : state.view === 'overview' ? (
+        <OverviewView onClose={closeView} sessionId={state.sessionId} />
       ) : (
         <>
           <ChatLog history={state.history} assistantBuf={state.assistantBuf} />
-          <ChatInput ready={state.phase === 'ready'} onSubmit={handleSubmit} />
+          <ChatInput
+            ready={state.phase === 'ready'}
+            onSubmit={handleSubmit}
+            onCommand={(target) => dispatch({ type: 'OPEN_VIEW', target })}
+          />
         </>
       )}
     </Box>

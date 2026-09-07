@@ -12,7 +12,12 @@
  * it is testable in isolation (Task 9):
  *
  *   chat ─TOGGLE_VIEW (Ctrl+P)→ approve      approve ─TOGGLE_VIEW (Ctrl+P)→ chat
- *   approve ─CLOSE_VIEW (Esc)→ chat          chat ─CLOSE_VIEW→ chat (no-op)
+ *   <any> ─CLOSE_VIEW (Esc)→ chat            chat ─CLOSE_VIEW→ chat (no-op)
+ *   chat+ready ─OPEN_VIEW 'ledger'→ ledger   chat+ready ─OPEN_VIEW 'overview'→ overview
+ *
+ * OPEN_VIEW (the `l` / `s` hotkeys) only fires from the chat view while `ready`
+ * — it never hijacks keys mid-turn. TOGGLE_VIEW (Ctrl+P, the read-only approve
+ * gate) is exempt: it is a safety screen and works even while a turn streams.
  *
  * A third flag, `reconnecting`, tracks a live-SSE reconnect in progress (the
  * sidecar buffer + cursor guarantee no chat is lost). It rides on the same
@@ -43,7 +48,7 @@ export type Phase =
   | 'streaming'
   | 'down';
 
-export type View = 'chat' | 'approve';
+export type View = 'chat' | 'approve' | 'ledger' | 'overview';
 
 export type LineKind = 'user' | 'assistant' | 'activity' | 'error';
 
@@ -54,9 +59,11 @@ export interface Line {
 
 export interface UiState {
   phase: Phase;
-  /** Which screen is on top: the chat log or the read-only approve gate. */
+  /** Which screen is on top: chat log, approve gate, ledger or overview. */
   view: View;
   status: Status | null;
+  /** Session id of the last turn (from POST /chat); shown in the status bar. */
+  sessionId: string | null;
   /** Completed chat lines, in order. */
   history: Line[];
   /** Deltas of the turn in flight, accumulated; flushed to history on DONE. */
@@ -76,6 +83,7 @@ export const initialState: UiState = {
   phase: 'boot',
   view: 'chat',
   status: null,
+  sessionId: null,
   history: [],
   assistantBuf: '',
   error: null,
@@ -93,7 +101,9 @@ export type Action =
   | { type: 'ERROR'; detail: string }
   | { type: 'RECONNECTING' }
   | { type: 'RECONNECTED' }
+  | { type: 'SESSION'; sessionId: string }
   | { type: 'TOGGLE_VIEW' }
+  | { type: 'OPEN_VIEW'; target: 'ledger' | 'overview' }
   | { type: 'CLOSE_VIEW' };
 
 const IN_TURN: ReadonlySet<Phase> = new Set<Phase>(['thinking', 'streaming']);
@@ -192,9 +202,22 @@ export function reducer(state: UiState, action: Action): UiState {
       return { ...state, reconnecting: false };
     }
 
+    case 'SESSION': {
+      return state.sessionId === action.sessionId
+        ? state
+        : { ...state, sessionId: action.sessionId };
+    }
+
     case 'TOGGLE_VIEW': {
       // Only flips the view; a turn in flight keeps running underneath.
       return { ...state, view: state.view === 'approve' ? 'chat' : 'approve' };
+    }
+
+    case 'OPEN_VIEW': {
+      // Ledger / overview hotkeys: only from the chat view, only while ready —
+      // never steal a keystroke from an in-flight turn.
+      if (state.view !== 'chat' || state.phase !== 'ready') return state;
+      return { ...state, view: action.target };
     }
 
     case 'CLOSE_VIEW': {

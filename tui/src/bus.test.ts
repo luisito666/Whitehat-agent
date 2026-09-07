@@ -199,3 +199,56 @@ describe('bus reducer — view axis (approve gate)', () => {
     expect(mid.history).toEqual([{ kind: 'user', text: 'hi' }]);
   });
 });
+
+describe('bus reducer — view axis (ledger / overview)', () => {
+  const ready = (): UiState =>
+    reducer(initialState, { type: 'DISCOVER_OK', status: STATUS });
+
+  test('OPEN_VIEW opens the ledger from chat + ready', () => {
+    expect(reducer(ready(), { type: 'OPEN_VIEW', target: 'ledger' }).view).toBe(
+      'ledger',
+    );
+  });
+
+  test('OPEN_VIEW opens the overview from chat + ready', () => {
+    expect(
+      reducer(ready(), { type: 'OPEN_VIEW', target: 'overview' }).view,
+    ).toBe('overview');
+  });
+
+  test('OPEN_VIEW is ignored unless the phase is ready', () => {
+    const thinking = run(
+      initialState,
+      { type: 'DISCOVER_OK', status: STATUS },
+      { type: 'SUBMIT', text: 'hi' },
+    );
+    expect(reducer(thinking, { type: 'OPEN_VIEW', target: 'ledger' })).toBe(
+      thinking,
+    );
+  });
+
+  test('OPEN_VIEW is ignored unless the current view is chat', () => {
+    const approve = reducer(ready(), { type: 'TOGGLE_VIEW' });
+    expect(reducer(approve, { type: 'OPEN_VIEW', target: 'ledger' })).toBe(
+      approve,
+    );
+  });
+
+  test('CLOSE_VIEW returns to chat from both ledger and overview', () => {
+    const l = reducer(ready(), { type: 'OPEN_VIEW', target: 'ledger' });
+    expect(reducer(l, { type: 'CLOSE_VIEW' }).view).toBe('chat');
+    const o = reducer(ready(), { type: 'OPEN_VIEW', target: 'overview' });
+    expect(reducer(o, { type: 'CLOSE_VIEW' }).view).toBe('chat');
+  });
+
+  test('SESSION stores the session id (and no-ops when unchanged)', () => {
+    const withId = reducer(initialState, {
+      type: 'SESSION',
+      sessionId: 'abc123def456',
+    });
+    expect(withId.sessionId).toBe('abc123def456');
+    expect(reducer(withId, { type: 'SESSION', sessionId: 'abc123def456' })).toBe(
+      withId,
+    );
+  });
+});
