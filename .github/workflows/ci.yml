@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Create venv + install deps
+        run: |
+          uv venv
+          uv pip install -e ".[dev,mcp]" langgraph-supervisor
+
+      - name: Run pytest
+        run: .venv/bin/python -m pytest -q
+
+  tui:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tui
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Enable pnpm via corepack
+        run: |
+          corepack enable
+          corepack prepare pnpm@latest --activate
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Test + typecheck
+        run: |
+          pnpm test
+          pnpm typecheck
+
+      - name: Build (bundle smoke)
+        run: |
+          pnpm build
+          test -f dist/pentest-chat.js
+          node dist/pentest-chat.js --version

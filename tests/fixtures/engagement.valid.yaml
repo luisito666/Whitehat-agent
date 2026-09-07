@@ -1,0 +1,23 @@
+# Engagement fixture for the TUI approve-gate E2E (tui/scripts/e2e-engagement.ts).
+# Not a real authorization: lab-only, loopback scope. Point the sidecar at a
+# tmp copy of this file via PENTEST_ENGAGEMENT_FILE.
+engagement_id: ENG-FIXTURE-2026-009
+client:
+  name: "Fixture Client SA"
+  contact: "QA"
+authorization:
+  reference: "roE-fixture-tui-v1"
+  valid_from: "2026-01-01"
+  valid_until: "2026-12-31"
+scope:
+  allowed_targets:
+    - "127.0.0.1/32"
+rules_of_engagement:
+  allowed_techniques:
+    - "path-traversal-poc"
+  prohibited:
+    - "dos"
+  max_evidence_items: 5
+msf:
+  allowed_modules:
+    - "exploit/unix/ftp/vsftpd_234_backdoor"
