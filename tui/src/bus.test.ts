@@ -117,6 +117,43 @@ describe('bus reducer edges', () => {
     });
   });
 
+  test('RECONNECTING sets the flag mid-turn; RECONNECTED clears it', () => {
+    const mid = run(
+      initialState,
+      { type: 'DISCOVER_OK', status: STATUS },
+      { type: 'SUBMIT', text: 'hi' },
+      { type: 'DELTA', text: 'half' },
+      { type: 'RECONNECTING' },
+    );
+    expect(mid.reconnecting).toBe(true);
+    expect(mid.phase).toBe('streaming');
+    expect(mid.assistantBuf).toBe('half');
+    const back = reducer(mid, { type: 'RECONNECTED' });
+    expect(back.reconnecting).toBe(false);
+  });
+
+  test('RECONNECTING is ignored outside a turn', () => {
+    const ready = reducer(initialState, { type: 'DISCOVER_OK', status: STATUS });
+    expect(reducer(ready, { type: 'RECONNECTING' })).toBe(ready);
+  });
+
+  test('DONE and SUBMIT force the reconnecting flag off', () => {
+    const reconnecting = run(
+      initialState,
+      { type: 'DISCOVER_OK', status: STATUS },
+      { type: 'SUBMIT', text: 'hi' },
+      { type: 'DELTA', text: 'x' },
+      { type: 'RECONNECTING' },
+    );
+    expect(reconnecting.reconnecting).toBe(true);
+    expect(reducer(reconnecting, { type: 'DONE' }).reconnecting).toBe(false);
+    const nextTurn = run(
+      { ...reconnecting, phase: 'ready' },
+      { type: 'SUBMIT', text: 'again' },
+    );
+    expect(nextTurn.reconnecting).toBe(false);
+  });
+
   test('DELTA outside a turn is ignored', () => {
     const ready = reducer(initialState, { type: 'DISCOVER_OK', status: STATUS });
     expect(reducer(ready, { type: 'DELTA', text: 'x' })).toBe(ready);

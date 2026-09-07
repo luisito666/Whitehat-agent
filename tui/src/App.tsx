@@ -1,33 +1,25 @@
 /**
- * Chat loop: input → POST /chat → render.
+ * Chat loop: input → POST /chat → live SSE render.
  *
  *   - polls GET /status every 2s (DISCOVER_OK / DISCOVER_FAIL)
- *   - on submit: dispatch SUBMIT, POST /chat, then — INTERIM, Task 10 swaps this
- *     for a live SSE reader — poll GET /chat/{sid}/events?cursor= every 500ms,
- *     translating frames into DELTA / ACTIVITY / DONE / ERROR until the terminal
- *     chat.done (the POST response is NOT the end of the turn).
+ *   - on submit: dispatch SUBMIT, POST /chat, then open a live SSE reader
+ *     (src/sse.ts) on GET /chat/{sid}/events?cursor=, translating frames into
+ *     DELTA / ACTIVITY / DONE / ERROR until the terminal chat.done (the POST
+ *     response is NOT the end of the turn). Reconnects across benign stream
+ *     closes are transparent to the bus — cursor + sidecar buffer mean no chat
+ *     is lost; the status bar just shows "reconectando…" while one is in flight.
  */
 import { useCallback, useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { Box, Text, useInput } from 'ink';
-import {
-  fetchEvents,
-  getStatus,
-  postChat,
-  type Status,
-} from './api.js';
+import { getStatus, postChat, type Status } from './api.js';
+import { streamEvents } from './sse.js';
 import { useBus, type UiState } from './bus.js';
 import { ApproveGate } from './components/ApproveGate.js';
 import { ChatLog } from './components/ChatLog.js';
 import { ChatInput } from './components/ChatInput.js';
 
 const STATUS_POLL_MS = 2000;
-const EVENT_POLL_MS = 500;
-/** Safety bound on the interim event poll (Task 10 removes the loop). */
-const MAX_EVENT_POLLS = 600;
-
-const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
 
 function workersUp(status: Status | null): string {
   if (!status) return '';
@@ -45,9 +37,9 @@ function phaseLabel(state: UiState): string {
     case 'ready':
       return `ready${workersUp(state.status)}`;
     case 'thinking':
-      return 'thinking…';
+      return state.reconnecting ? 'reconectando…' : 'thinking…';
     case 'streaming':
-      return 'streaming…';
+      return state.reconnecting ? 'reconectando…' : 'streaming…';
   }
 }
 
@@ -74,7 +66,11 @@ function StatusLine({ state }: { state: UiState }): ReactNode {
   return (
     <Text>
       <Text dimColor>estado </Text>
-      {stateWord(state.phase)}
+      {state.reconnecting ? (
+        <Text color="yellow">reconectando…</Text>
+      ) : (
+        stateWord(state.phase)
+      )}
       <Text dimColor> · engagement </Text>
       {eng?.id ? (
         <Text color="green">
@@ -92,11 +88,14 @@ export function App(): ReactNode {
   const { state, dispatch } = useBus();
   const sessionRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
+  /** Aborts the live SSE reader of the turn in flight (unmount / new turn). */
+  const turnAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      turnAbortRef.current?.abort();
     };
   }, []);
 
@@ -121,46 +120,67 @@ export function App(): ReactNode {
 
   const runTurn = useCallback(
     async (text: string): Promise<void> => {
+      turnAbortRef.current?.abort();
+      const ac = new AbortController();
+      turnAbortRef.current = ac;
       try {
         const { session_id, cursor } = await postChat(
           text,
           sessionRef.current ?? undefined,
         );
         sessionRef.current = session_id;
-        let seen = Number(cursor) || 0;
 
-        for (let i = 0; i < MAX_EVENT_POLLS; i++) {
-          if (!mountedRef.current) return;
-          const events = await fetchEvents(session_id, seen);
-          let terminal = false;
-          for (const ev of events) {
-            if (ev.id > seen) seen = ev.id;
-            if (ev.event === 'chat.delta') {
-              dispatch({ type: 'DELTA', text: String(ev.data.text ?? '') });
-            } else if (ev.event === 'agent.activity') {
-              dispatch({
-                type: 'ACTIVITY',
-                role: String(ev.data.role ?? '?'),
-                action: String(ev.data.action ?? ''),
-                detail:
-                  ev.data.detail != null ? String(ev.data.detail) : undefined,
-              });
-            } else if (ev.event === 'chat.done') {
-              dispatch({ type: 'DONE' });
-              terminal = true;
-            } else if (ev.event === 'error') {
-              dispatch({
-                type: 'ERROR',
-                detail: String(ev.data.detail ?? 'stream error'),
-              });
-              terminal = true;
-            }
-          }
-          if (terminal) return;
-          await sleep(EVENT_POLL_MS);
-        }
-        dispatch({ type: 'ERROR', detail: 'turn timed out waiting for chat.done' });
+        let sawTerminal = false;
+        await streamEvents(
+          session_id,
+          Number(cursor) || 0,
+          {
+            onEvent: (_id, event, data) => {
+              if (!mountedRef.current) return;
+              if (event === 'chat.delta') {
+                dispatch({ type: 'DELTA', text: String(data.text ?? '') });
+              } else if (event === 'agent.activity') {
+                dispatch({
+                  type: 'ACTIVITY',
+                  role: String(data.role ?? '?'),
+                  action: String(data.action ?? ''),
+                  detail: data.detail != null ? String(data.detail) : undefined,
+                });
+              } else if (event === 'chat.done') {
+                sawTerminal = true;
+                dispatch({ type: 'DONE' });
+              } else if (event === 'error') {
+                sawTerminal = true;
+                dispatch({
+                  type: 'ERROR',
+                  detail: String(data.detail ?? 'stream error'),
+                });
+              }
+            },
+            // Terminal frame seen → the turn already ended via DONE/ERROR.
+            // No terminal frame → the reconnect budget ran out: surface it so
+            // the UI leaves the in-turn phase instead of hanging.
+            onClose: () => {
+              if (!mountedRef.current) return;
+              dispatch({ type: 'RECONNECTED' });
+              if (!sawTerminal) {
+                dispatch({
+                  type: 'ERROR',
+                  detail: 'conexión perdida con el sidecar — reintento agotado',
+                });
+              }
+            },
+            onReconnecting: () => {
+              if (mountedRef.current) dispatch({ type: 'RECONNECTING' });
+            },
+            onReconnected: () => {
+              if (mountedRef.current) dispatch({ type: 'RECONNECTED' });
+            },
+          },
+          ac.signal,
+        );
       } catch (err) {
+        if (!mountedRef.current) return;
         dispatch({
           type: 'ERROR',
           detail: err instanceof Error ? err.message : String(err),

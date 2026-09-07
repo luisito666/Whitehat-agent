@@ -155,8 +155,10 @@ export async function getLedger(tail: number): Promise<Ledger> {
 
 /**
  * Parse a `text/event-stream` payload into frames. Frames are separated by a
- * blank line; within a frame we read `id:`, `event:` and `data:` lines. A
- * trailing partial frame (no blank-line terminator) is returned so the caller
+ * blank line; within a frame we read `id:`, `event:` and `data:` lines. Per the
+ * SSE spec multiple `data:` lines in one frame are joined with `\n` (the sidecar
+ * emits one, but a chunk boundary can still split a long payload across lines).
+ * A trailing partial frame (no blank-line terminator) is returned so the caller
  * can prepend it to the next chunk.
  */
 export function parseSse(text: string): { events: ChatEvent[]; rest: string } {
@@ -166,13 +168,17 @@ export function parseSse(text: string): { events: ChatEvent[]; rest: string } {
   for (const frame of parts) {
     let id = 0;
     let event = '';
-    let data = '';
+    const dataParts: string[] = [];
     for (const line of frame.split('\n')) {
       if (line.startsWith('id:')) id = Number(line.slice(3).trim()) || 0;
       else if (line.startsWith('event:')) event = line.slice(6).trim();
-      else if (line.startsWith('data:')) data = line.slice(5).trim();
+      else if (line.startsWith('data:')) {
+        const v = line.slice(5);
+        dataParts.push(v.startsWith(' ') ? v.slice(1) : v);
+      }
     }
     if (!event) continue;
+    const data = dataParts.join('\n').trim();
     let parsed: Record<string, unknown> = {};
     if (data) {
       try {

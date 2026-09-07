@@ -6,7 +6,25 @@ SSE `/chat/{sid}/events`, `/engagement`, `/ledger`.
 
 Task 8 adds the basic chat loop: `src/api.ts` (HTTP client), `src/bus.tsx` (UI
 state machine + context), and the `ChatLog` / `ChatInput` components wired up in
-`src/App.tsx`. Live SSE mode and the ledger view land in Tasks 10–11.
+`src/App.tsx`. Task 10 adds live SSE mode with reconnect (`src/sse.ts`); the
+ledger view lands in Task 11.
+
+### Live SSE mode (Task 10)
+
+`src/sse.ts` `streamEvents()` reads `GET /chat/{sid}/events?cursor=` as a live
+`fetch` stream (not `EventSource` — Node's has no custom headers and no clean
+abort). It parses the `text/event-stream` incrementally (`parseSse`, re-exported
+here as `parseSSE`), tracking `lastEventId`. The sidecar long-polls ~55s then
+closes; on any non-terminal close it reconnects from `lastEventId` (the sidecar
+replays its per-session buffer, so a network blip loses no chat) with a
+500ms → 1s → 2s backoff, up to 3 consecutive failed attempts, then gives up with
+`onClose()`. A close whose last frame was `chat.done` / `error` is the real end
+of the turn.
+
+`App.tsx` swaps the old 500ms poll for `streamEvents`; the reducer gains
+`RECONNECTING` / `RECONNECTED` (flag `reconnecting`, force-cleared on
+`SUBMIT` / `DONE` / `ERROR`) and the status bar shows `reconectando…` while a
+reconnect is in flight.
 
 ### Approve gate (Task 9)
 
@@ -49,9 +67,8 @@ chat ─TOGGLE_VIEW (Ctrl+P)→ approve    approve ─TOGGLE_VIEW / CLOSE_VIEW (
 Ctrl+C exits (raw-mode cleanup via `useApp().exit()`); it is a component concern,
 not a reducer action.
 
-Until Task 10 wires a live `EventSource`, `App.tsx` reads the turn's events by
-polling `GET /chat/{sid}/events?cursor=` every 500ms and parsing the
-`text/event-stream` frames by hand (`parseSse` in `src/api.ts`).
+`App.tsx` reads the turn's events with `streamEvents` (`src/sse.ts`); the pure
+frame parser is `parseSse` in `src/api.ts`.
 
 ## Requirements
 
@@ -131,6 +148,19 @@ pkill -f pentest_agent.chat_server
 
 Expected: the first run prints `id=ENG-FIXTURE-2026-009 … auth_reference=roE-fixture-tui-v1`,
 the second prints `null (404) -> fail-closed banner: run approve.py`. Both end `[e2e] OK`.
+
+### E2E for live SSE + reconnect
+
+`scripts/e2e-sse-reconnect.ts` is self-contained — it spawns and SIGKILLs its own
+deterministic sidecars. It streams a turn, kills the sidecar mid-flight (the
+reader must not crash — reconnect backs off then `onClose`s), then brings a fresh
+sidecar up and runs a clean turn to `chat.done`.
+
+```sh
+cd tui && pnpm exec tsx scripts/e2e-sse-reconnect.ts
+```
+
+Expected tail: `second turn text: "pong: otra vez" done=true` then `[e2e] OK`.
 
 ## Note on the Ink version
 

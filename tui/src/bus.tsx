@@ -14,6 +14,11 @@
  *   chat ─TOGGLE_VIEW (Ctrl+P)→ approve      approve ─TOGGLE_VIEW (Ctrl+P)→ chat
  *   approve ─CLOSE_VIEW (Esc)→ chat          chat ─CLOSE_VIEW→ chat (no-op)
  *
+ * A third flag, `reconnecting`, tracks a live-SSE reconnect in progress (the
+ * sidecar buffer + cursor guarantee no chat is lost). It rides on the same
+ * state so the status bar can show "reconectando…"; RECONNECTING / RECONNECTED
+ * toggle it and it is force-cleared whenever a turn starts or ends.
+ *
  * The approve view is read-only (it never approves anything — D5). A turn can
  * keep streaming underneath while it is open; toggling the view never touches
  * `phase`, `history` or `assistantBuf`.
@@ -60,6 +65,8 @@ export interface UiState {
   error: string | null;
   /** Consecutive failed /status polls; drives the fall to `down`. */
   discoverFails: number;
+  /** A live-SSE reconnect is in flight (transparent to history/assistantBuf). */
+  reconnecting: boolean;
 }
 
 /** Failed polls tolerated while `discovering`/`boot` before declaring `down`. */
@@ -73,6 +80,7 @@ export const initialState: UiState = {
   assistantBuf: '',
   error: null,
   discoverFails: 0,
+  reconnecting: false,
 };
 
 export type Action =
@@ -83,6 +91,8 @@ export type Action =
   | { type: 'ACTIVITY'; role: string; action: string; detail?: string }
   | { type: 'DONE' }
   | { type: 'ERROR'; detail: string }
+  | { type: 'RECONNECTING' }
+  | { type: 'RECONNECTED' }
   | { type: 'TOGGLE_VIEW' }
   | { type: 'CLOSE_VIEW' };
 
@@ -120,6 +130,7 @@ export function reducer(state: UiState, action: Action): UiState {
         phase: 'thinking',
         error: null,
         assistantBuf: '',
+        reconnecting: false,
         history: [...state.history, { kind: 'user', text: action.text }],
       };
     }
@@ -144,7 +155,13 @@ export function reducer(state: UiState, action: Action): UiState {
       const history = state.assistantBuf
         ? [...state.history, { kind: 'assistant' as const, text: state.assistantBuf }]
         : state.history;
-      return { ...state, phase: 'ready', assistantBuf: '', history };
+      return {
+        ...state,
+        phase: 'ready',
+        assistantBuf: '',
+        reconnecting: false,
+        history,
+      };
     }
 
     case 'ERROR': {
@@ -154,7 +171,25 @@ export function reducer(state: UiState, action: Action): UiState {
       ];
       const phase: Phase =
         state.phase === 'ready' || IN_TURN.has(state.phase) ? 'ready' : state.phase;
-      return { ...state, phase, error: action.detail, assistantBuf: '', history };
+      return {
+        ...state,
+        phase,
+        error: action.detail,
+        assistantBuf: '',
+        reconnecting: false,
+        history,
+      };
+    }
+
+    case 'RECONNECTING': {
+      // Only meaningful mid-turn; never disturbs phase/history/assistantBuf.
+      if (!IN_TURN.has(state.phase) || state.reconnecting) return state;
+      return { ...state, reconnecting: true };
+    }
+
+    case 'RECONNECTED': {
+      if (!state.reconnecting) return state;
+      return { ...state, reconnecting: false };
     }
 
     case 'TOGGLE_VIEW': {
