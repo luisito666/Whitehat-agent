@@ -3,8 +3,11 @@
 Task 1: GET /status con workers stubbeados (httpx.MockTransport).
 Task 2: POST /chat single-turn con el supervisor monkeypatcheado a un stub
         cuyo astream_events emite 2 chunks + done.
+Task 3: GET /chat/{sid}/events -> SSE (text/event-stream) con replay por cursor.
 """
 from __future__ import annotations
+
+import json
 
 import httpx
 import pytest
@@ -166,3 +169,66 @@ def test_chat_single_supervisor_build(client, monkeypatch):
     client.post("/chat", json={"session_id": "s1", "message": "uno"})
     client.post("/chat", json={"session_id": "s1", "message": "dos"})
     assert calls["n"] == 1
+
+
+# --------------------------------------------------------------------- Task 3
+def _parse_sse(raw: str) -> list[dict]:
+    """text/event-stream -> lista de {id, event, data}."""
+    events: list[dict] = []
+    for block in raw.split("\n\n"):
+        if not block.strip():
+            continue
+        rec: dict = {}
+        for line in block.splitlines():
+            field, _, value = line.partition(": ")
+            if field == "id":
+                rec["id"] = int(value)
+            elif field == "event":
+                rec["event"] = value
+            elif field == "data":
+                rec["data"] = json.loads(value)
+        events.append(rec)
+    return events
+
+
+def _read_sse(client, url: str, **kwargs) -> tuple[httpx.Response, list[dict]]:
+    with client.stream("GET", url, **kwargs) as resp:
+        raw = "".join(resp.iter_text())
+        return resp, _parse_sse(raw)
+
+
+def test_sse_streams_events(client, monkeypatch):
+    monkeypatch.setattr(a2a_team, "build_a2a_supervisor", lambda *a, **k: _StubAgent())
+    sid = client.post("/chat", json={"message": "hola equipo"}).json()["session_id"]
+
+    resp, events = _read_sse(client, f"/chat/{sid}/events")
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    assert [e["event"] for e in events] == ["chat.delta", "chat.delta", "chat.done"]
+    assert [e["id"] for e in events] == [1, 2, 3]
+    assert events[-1]["event"] == "chat.done"
+    assert "".join(e["data"]["text"] for e in events if e["event"] == "chat.delta") == "Hola operador"
+
+
+def test_sse_cursor_replay(client, monkeypatch):
+    monkeypatch.setattr(a2a_team, "build_a2a_supervisor", lambda *a, **k: _StubAgent())
+    sid = client.post("/chat", json={"message": "hola equipo"}).json()["session_id"]
+    all_events = chat_server.get_events(sid)
+    first_id = all_events[0]["id"]
+
+    _, events = _read_sse(client, f"/chat/{sid}/events", params={"cursor": first_id})
+
+    assert [e["id"] for e in events] == [e["id"] for e in all_events if e["id"] > first_id]
+    assert first_id not in [e["id"] for e in events]
+
+    # mismo comportamiento via header Last-Event-ID
+    _, hdr_events = _read_sse(
+        client, f"/chat/{sid}/events", headers={"Last-Event-ID": str(first_id)}
+    )
+    assert [e["id"] for e in hdr_events] == [e["id"] for e in events]
+
+
+def test_sse_unknown_session_404(client):
+    resp = client.get("/chat/does-not-exist/events")
+    assert resp.status_code == 404
