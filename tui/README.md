@@ -90,9 +90,10 @@ start with those letters.
 ## Scripts
 
 | Command          | What it does                                        |
-|------------------|----------------------------------------------------|
+|------------------|------------------------------------------------------|
 | `pnpm dev`       | `tsx src/main.tsx` — run the TUI (needs a TTY)      |
 | `pnpm build`     | `node scripts/build.mjs` — bundle → `dist/pentest-chat.js` |
+| `pnpm build:bin` | `node scripts/build-bin.mjs` — standalone binary (Node ≥ 26) → `dist/bin/` |
 | `pnpm test`      | `vitest run` — headless render / reducer tests      |
 | `pnpm typecheck` | `tsc --noEmit` — strict typecheck                   |
 
@@ -107,7 +108,9 @@ node dist/pentest-chat.js --help      # -> usage: keys + PENTEST_TUI_URL
 `scripts/build.mjs` is a single **esbuild** bundle (`platform: node`,
 `format: esm`, `target: node22`, no minify): Ink, React and the fetch client are
 inlined, a `#!/usr/bin/env node` shebang is prepended and the file is `chmod +x`.
-`package.json` wires it as `bin.pentest-chat`.
+`package.json` wires it as `bin.pentest-chat`. The version is baked in at build
+time (`--define:PKG_VERSION=…`, see `src/cli.ts`) so `--version` also works
+inside the standalone binary below, where no `package.json` exists.
 
 > The plan said "`pastel bake` → `dist/pentest-chat`". **pastel
 > (vadimdemedes/pastel) has no `bake` / standalone-binary command** — it is a
@@ -117,6 +120,38 @@ inlined, a `#!/usr/bin/env node` shebang is prepended and the file is `chmod +x`
 > Python backend is already a `pip install`).
 
 `dist/` is git-ignored (build artifact).
+
+## Standalone binary (no Node.js required)
+
+```sh
+pnpm build:bin      # -> dist/bin/pentest-chat-linux-x64 (~150 MB)
+./dist/bin/pentest-chat-linux-x64 --version   # -> "pentest-chat 0.1.0"
+```
+
+`scripts/build-bin.mjs` chains `build.mjs` → `node --build-sea` (Node ≥ 26).
+The bundle is embedded as the SEA main script with `"mainFormat": "module"` —
+Ink 6 / yoga-layout use top-level await, so the main must be ESM; no CJS
+wrapper is needed. The script smoke-tests the binary with a scrubbed `PATH`
+(no node) before declaring success, and refuses non-linux platforms (untested).
+
+Notes:
+
+- The binary is ~150 MB because it embeds the full Node runtime. That is the
+  price of a true standalone; the 1.8 MB `dist/pentest-chat.js` bundle is the
+  alternative when `node` is already on the machine.
+- **Build requires Node ≥ 26** (`--build-sea`); the produced binary needs
+  nothing on the target machine. `nvs add 26 && nvs use 26` gets you a build
+  Node side-by-side.
+- SEA is the injection path that replaced `postject` (unmaintained, removed
+  from the npm registry) — `--build-sea` is Node core, no external tools.
+- SEA is still flagged *experimental* upstream and Node security updates
+  require rebuilding the binary.
+
+Smoke test with the built binary (no TTY needed):
+
+```sh
+pnpm build:bin && env -i PATH=/usr/bin:/bin ./dist/bin/pentest-chat-linux-x64 --version
+```
 
 ### Verifying the render without a TTY
 

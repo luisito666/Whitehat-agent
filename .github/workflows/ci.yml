@@ -59,3 +59,28 @@ jobs:
           pnpm build
           test -f dist/pentest-chat.js
           node dist/pentest-chat.js --version
+
+  # Exercises the standalone-binary pipeline (Node SEA) on every PR so it
+  # cannot silently rot. Does not upload the ~150 MB artifact.
+  tui-binary:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tui
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+
+      - name: Enable pnpm via corepack
+        run: |
+          corepack enable
+          corepack prepare pnpm@latest --activate
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Build standalone binary + smoke (no node on PATH)
+        run: pnpm build:bin

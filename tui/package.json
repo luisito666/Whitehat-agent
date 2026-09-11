@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "tsx src/main.tsx",
     "build": "node scripts/build.mjs",
+    "build:bin": "node scripts/build-bin.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
