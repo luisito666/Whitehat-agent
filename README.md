@@ -141,8 +141,11 @@ cd pentest-agent
 uv venv && source .venv/bin/activate
 uv pip install -e ".[dev]"
 
-# 1) Subagentes A2A (terminales separadas o el script)
-bash scripts/start_a2a_stack.sh        # recon 9101, vuln 9102, reporter 9103
+# 1) Stack completo: workers A2A + sidecar de chat (mata procesos viejos antes,
+#    health-check por componente, pidfiles en .cache/run/)
+bash scripts/pentest-stack.sh up          # recon 9101, vuln 9102, reporter 9103, chat 9000
+bash scripts/pentest-stack.sh status      # health + git SHA de lo que corre
+bash scripts/pentest-stack.sh down        # mata todo (pidfile + patrón + puerto)
 
 # 2) Supervisor coordinando via A2A (requiere GLM_API_KEY en env o ~/.hermes/.env)
 .venv/bin/python scripts/e2e_a2a.py    # audita 127.0.0.1 (demo)
@@ -297,22 +300,25 @@ cd tui && pnpm install && cd ..
 ### Arranque completo
 
 La TUI **no levanta el stack**: lo descubre polleando `GET /status` cada 2s.
-Tres procesos (terminales separadas, tmux, etc.), desde la raíz del repo:
+Con el stack manager basta un comando (mata procesos viejos antes — nunca un
+sidecar pre-fix sirviendo código obsoleto):
 
 ```bash
-# 1) workers A2A — recon :9101, vuln :9102, reporter :9103
-bash scripts/start_a2a_stack.sh
+# 1) workers A2A + sidecar de chat: recon :9101, vuln :9102, reporter :9103, chat :9000
+bash scripts/pentest-stack.sh up
+bash scripts/pentest-stack.sh status     # health + git SHA + pid de cada componente
+bash scripts/pentest-stack.sh logs chat  # tail -f del sidecar (Ctrl-C para salir)
 
-# 2) sidecar de chat (127.0.0.1:9000; GLM_API_KEY en env o ~/.hermes/.env)
-.venv/bin/python -m pentest_agent.chat_server
-
-# 3) la TUI (terminal interactiva)
+# 2) la TUI (terminal interactiva)
 cd tui && pnpm dev
+
+# 3) al terminar
+bash scripts/pentest-stack.sh down
 ```
 
-Sin el paso 1 la TUI arranca igual, pero el supervisor no tendrá a quién
-delegar (workers ○ down en la vista `s`). El exploit worker (:9104) se añade
-como siempre: `A2A_EXPLOIT_URL` + approve.py (ver «Modo ofensivo»).
+Otros útiles: `restart [comp]` (refrescar código), `lab` (levanta/detiene el
+vsftpd 2.3.4 backdooreado en loopback para pruebas), `up exploit`
+(fail-closed: exige `engagement.yaml` + `PENTEST_EXPLOIT_APPROVED`).
 
 ### Teclas
 
